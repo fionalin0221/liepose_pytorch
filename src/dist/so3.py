@@ -30,24 +30,24 @@ class LieDist():
         shape = n + (3,)
         tan = torch.randn(shape)
         tan = tan * self.scale
-        tan = SO3.exp_map(tan).log_map()
+        # tan = SO3.exp_map(tan).log_map()
         return tan
 
-    def sample(self, n) -> SO3:
-        """Sample n rotations"""
-        # n = tuple(n) if hasattr(n, "__iter__") else (n,)
-        shape = n + (3,)
+    # def sample(self, n) -> SO3:
+    #     """Sample n rotations"""
+    #     # n = tuple(n) if hasattr(n, "__iter__") else (n,)
+    #     shape = n + (3,)
         
-        tan = torch.randn(shape)
-        tan = tan * self.scale
-        so3 = SO3.exp_map(tan) #.log_map()
+    #     tan = torch.randn(shape)
+    #     tan = tan * self.scale
+    #     so3 = SO3.exp_map(tan) #.log_map()
 
-        # shape = tan.shape[:-1]
-        # tan = tan.reshape(-1, 3)
-        # quat = torch.stack([self.mean @ SO3.exp(t).wxyz for t in tan])
+    #     # shape = tan.shape[:-1]
+    #     # tan = tan.reshape(-1, 3)
+    #     # quat = torch.stack([self.mean @ SO3.exp(t).wxyz for t in tan])
 
-        # so3 = SO3(quat.reshape(shape + (4,)))
-        return so3
+    #     # so3 = SO3(quat.reshape(shape + (4,)))
+    #     return so3
     
     @classmethod
     def _sample_unit(cls, n) -> np.array:

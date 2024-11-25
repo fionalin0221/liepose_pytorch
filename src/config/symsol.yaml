@@ -1,0 +1,24 @@
+# model
+img_res: 224
+repr_type: "tan"
+resnet_depth: 34
+mlp_layers: 1
+fourier_block: True
+activ_fn: "leaky_relu"
+
+# training
+learn_noise: True
+loss_name: "chordal"
+epochs: 150
+batch_size: 16
+n_slices: 256
+
+# learning rate
+init_lr: 1.0e-4
+lr_decay_rate: 0.1
+
+# noise schedule
+noise_start: 1.0e-8
+noise_end: 1.0
+timesteps: 100
+power: 3.0

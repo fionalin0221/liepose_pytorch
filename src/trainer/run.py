@@ -1,33 +1,55 @@
 from .testbed import Testbed
 import torch
+import argparse
+import yaml
+from types import SimpleNamespace
 
+# Function to "recursively" convert a dictionary into a SimpleNamespace objects
+def dict_to_namespace(d):
+    if isinstance(d, dict):
+        # Convert all "nested" dictionaries to SimpleNamespace
+        return SimpleNamespace(**{k: dict_to_namespace(v) for k, v in d.items()})
+    return d
+
+def get_configs(desc="Liepose"):
+    """
+    Parses command-line arguments to load a configuration file and converts it into a namespace object.
+
+    Args:
+    desc (str): The description of the experiment
+
+    Returns:
+    SimpleNamespace: Namespace object contatining configuration values from YAML file.
+    """
+    # Define the argument parser
+    parser = argparse.ArgumentParser(description=desc)
+    parser.add_argument("--config", type=str, required=True, help="Path to the YAML configuration file.")
+    
+    # Parse the command-line arguments
+    args = parser.parse_args()
+
+    # Load the YAML file and convert it to an object
+    try:
+        with open(args.config, 'r') as file:
+            config_dict = yaml.safe_load(file)
+            config = dict_to_namespace(config_dict)
+            return config
+    except FileNotFoundError:
+        print(f"Error: The file '{args.config}' does not exist.")
+
+    return 
+
+# Main function to execute the training process
 def main():
+
     random_image = torch.rand(5, 3, 224, 224)
     rot = torch.randn((5, 3, 3))
     
-    class A():
-        def __init__(self):
-            self.repr_type = "tan"
-            self.noise_start = 1e-8
-            self.noise_end = 1.0
-            self.timesteps = 100
-            self.power = 3.0
-            self.img_res = 224
-            self.resnet_depth = 34
-            self.mlp_layers = 1
-            self.fourier_block = True
-            self.activ_fn = "leaky_relu"
-            self.learn_noise = True
-            self.loss_name = "chordal"
-            self.batch_size = 16
-            self.epochs = 150
-            self.init_lr = 1e-2
-            self.lr_decay_rate = 0.1
-            self.n_slices = 128
+    # Parse the arguments and load configuration
+    config = get_configs()
 
-    a = A()
-    test = Testbed(a)
-    test.train()
+    testbed = Testbed(config)
+    testbed.train()
 
 
 if __name__ == "__main__":
