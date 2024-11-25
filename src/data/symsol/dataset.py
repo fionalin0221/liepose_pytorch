@@ -36,7 +36,7 @@ class SymmetricSolidsDataset(Dataset):
         # print(type(image), type(label))
 
         # Convert image and label to numpy arrays, and then to torch tensors
-        image = torch.tensor(np.array(image), dtype=torch.float32)
+        image = np.array(image)
         label = torch.tensor(np.array(label), dtype=torch.float32)
 
         if self.transform:

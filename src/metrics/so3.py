@@ -5,7 +5,7 @@ from torch import Tensor
 from theseus.geometry import SO3
 
 def is_tan(t):
-    if isinstance(t, Tensor) and t.shape[-2:] == (1, 3):
+    if isinstance(t, Tensor) and t.shape[-1:] == (3, ) and not is_mat(t):
         return True
     else:
         return False
@@ -48,6 +48,8 @@ def as_mat(t)-> Tensor:
         return t.to_matrix()
     if is_mat(t):
         return t
+    if is_tan(t):
+        return SO3.exp_map(t).to_matrix()
     raise ValueError(t.shape)
 
 def as_quat(t)-> Tensor:
@@ -88,16 +90,19 @@ def main():
     matrix2 = SO3.rand(2)
     # print(matrix)
     vector = as_tan(matrix)
-    # print(vector)
-    m = as_mat(matrix)
-    m = as_lie(m)
-    # print(m)
-    x = chordal_distance(matrix, matrix2)
-    # print(x)
-    q = as_quat(matrix)
-    print(q)
-    m2 = as_lie(q)
-    print(m2)
+    # vector = vector.unsqueeze(dim=0)
+    mat = as_mat(vector)
+    print(vector.shape, mat.shape)
+    # # print(vector)
+    # m = as_mat(matrix)
+    # m = as_lie(m)
+    # # print(m)
+    # x = chordal_distance(matrix, matrix2)
+    # # print(x)
+    # q = as_quat(matrix)
+    # print(q)
+    # m2 = as_lie(q)
+    # print(m2)
 
 if __name__ == "__main__":
     main()

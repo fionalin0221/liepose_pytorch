@@ -30,7 +30,6 @@ class Backbone(nn.Module):
         dummy_temp = self.backbone(dummy_input)
         _, conv_in_dim, output_w, output_h = dummy_temp.shape
         linear_in_dim = self.feat_dim * output_w * output_h
-        print(self.feat_dim, output_w, output_h)
 
         # Initialize some layers for the output of backbone
         self.conv = nn.Conv2d(in_channels=conv_in_dim, 
@@ -73,8 +72,11 @@ class PosEmbed(nn.Module):
 
 
     def forward(self, x):
+        device = x.device
         x = x.unsqueeze(-1)
-        emb = x * self.log_scale_seq
+        
+        emb = x * self.log_scale_seq.to(device)
+
         emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
         emb = emb.view(emb.shape[:-2] + (-1,)) # Reshaping (N, -1)
         emb = self.mlp(emb)
@@ -139,6 +141,13 @@ class Head(nn.Module):
 
         self.linear = nn.Linear(256, self.dim)
 
+    def broadcast_batch(self, x, bs):
+        batch_size = x.shape[0]
+        slices = bs // batch_size
+        x = x.unsqueeze(dim=1)
+        x = x.repeat(1, slices, 1).reshape((-1,) + x.shape[2:])
+        return x
+
     """
     Args:
         img_feat: conditional signal - image (x0 in original code)
@@ -146,6 +155,7 @@ class Head(nn.Module):
         t: conditional signal - time index
     """
     def forward(self, img_feat, rt, t):
+        img_feat = self.broadcast_batch(img_feat, rt.shape[0])
         t = self.posEmbedT(t)
         x = self.posEmbedRt(rt)
         for blockImg, blockT in self.mlpBlocks:
@@ -157,7 +167,7 @@ class Model(nn.Module):
     def __init__(self, 
                  in_dim=6, 
                  out_dim=6,
-                 image_shape=[1, 224, 224, 3],
+                 image_shape=[1, 3, 224, 224],
                  resnet_depth=34,
                  mlp_layers=1,
                  fourier_block=True,
@@ -179,13 +189,13 @@ class Model(nn.Module):
         return mu
 
 def main():
-    # # Test Module1: backbone block
-    # # Initialize a batch of image_shape, batch_size = 2 
-    # image_shape = [1, 3, 224, 224]
-    # img = torch.randn(image_shape)
+    # Test Module1: backbone block
+    # Initialize a batch of image_shape, batch_size = 2 
+    image_shape = [10, 3, 224, 224]
+    img = torch.randn(image_shape)
 
-    # backbone = Backbone(image_shape=image_shape, feat_dim=64, dim=512, resnet_depth=50)
-    # output = backbone(img)
+    backbone = Backbone(image_shape=image_shape, feat_dim=64, dim=512, resnet_depth=34)
+    output = backbone(img)
     
     # # Expected [1, 512]
     # print(output.shape)
@@ -210,15 +220,15 @@ def main():
     # output_x = head(img, x, t)
     # print(output_x.shape)
 
-    # Test Module5: Model
-    image_shape = (10, 3, 224, 224)
-    model = Model(in_dim=3, out_dim=3, image_shape=image_shape, resnet_depth=50, mlp_layers=1, fourier_block=True, activ_fn='leaky_relu')
-    img = torch.randn(image_shape)
-    t = torch.randn((10, 1))
-    x = torch.randn((10, 3))
-    output = model(img, rt=x, t=t)
-    print(model)
-    print(output.shape)
+    # # Test Module5: Model
+    # image_shape = (10, 3, 224, 224)
+    # model = Model(in_dim=3, out_dim=3, image_shape=image_shape, resnet_depth=50, mlp_layers=1, fourier_block=True, activ_fn='leaky_relu')
+    # img = torch.randn(image_shape)
+    # t = torch.randn((10, 1))
+    # x = torch.randn((10, 3))
+    # output = model(img, rt=x, t=t)
+    # print(model)
+    # print(output.shape)
 
 
 if __name__ == '__main__':
