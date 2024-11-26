@@ -13,6 +13,11 @@ from ..utils import ops
 import matplotlib.pyplot as plt
 import numpy as np
 import torch.jit
+import csv
+from tqdm import tqdm
+import datetime
+import os
+from torch.amp import autocast, GradScaler
 
 
 class Testbed():
@@ -46,8 +51,8 @@ class Testbed():
                            activ_fn = self.a.activ_fn
                            )
         
-        # TODO: Set decay as parameters
-        decay = 0.999
+        # Initialize the EMA-model
+        decay = self.a.ema_tau
         self.ema_model = AveragedModel(self.model, multi_avg_fn=get_ema_multi_avg_fn(decay))
     
     def get_flat_batch_train(self, img, rot, n_slices):
@@ -69,12 +74,13 @@ class Testbed():
         """
         batch = {}
 
-        rts, ts, zts, r0s, tas, ats = [], [], [], [], [], []
+        rts, ts, zts, r0s, tas = [], [], [], [], []
 
         torch.manual_seed(42)
+
         batch_size = img.shape[0]
         for _ in range(n_slices):
-            
+
             # Sample random timesteps for size = batch_size
             t = torch.randint(low=0, high=self.noise_schedule.timesteps, size=(batch_size,)) #size(batch,)
             # t = torch.tensor([50] * batch_size)
@@ -84,11 +90,10 @@ class Testbed():
             # Sample unit Gaussian noise, type: tensor, size: (batch, 3)
             zt = LieDist._sample_unit(n=(batch_size,)) 
 
-            alphat = torch.tensor(self.noise_schedule.alphas[t]).unsqueeze(1)
+            # alphat = torch.tensor(self.noise_schedule.alphas[t]).unsqueeze(1)
             sqrt_alphas_t = torch.tensor(self.noise_schedule.sqrt_alphas[t]).unsqueeze(1)
 
             # ta = lie_metrics.as_tan(r0)
-            # print(r0, ta)
             # ta = -1 / sqrt_alphas_t * zt
             ta = zt
 
@@ -108,22 +113,33 @@ class Testbed():
             zts.append(zt)
             r0s.append(r0)
             tas.append(ta)
-            ats.append(alphat.squeeze(1))
+
             # print(alphat, ta, zt)
+
         # Concatenate slices and add them to the batch
         batch["img"] = img
         batch["rt"] = torch.cat(rts, dim=0)
         batch["t"] = torch.cat(ts, dim=0)
-        # print(ts)
-        # print(batch["t"])
         batch["zt"] = torch.cat(zts, dim=0)
         batch["r0"] = torch.cat(r0s, dim=0)
         batch["ta"] = torch.cat(tas, dim=0)
-        batch["at"] = torch.cat(ats, dim=0)
-        # print(batch["at"].shape)
+
         # print(batch['img'].shape, batch['rt'].shape, batch['t'].shape, batch['zt'].shape, batch['r0'].shape)
         
         return batch
+
+    def image_show(self, img):
+        # # # Display the first image in the batch
+        img_vis = img.numpy()
+        img_vis = img_vis + 0.5
+        # img = images[0].numpy().astype(np.uint8)  # Convert to NumPy array for visualization
+        # img = (img - img.min()) / (img.max() - img.min()) * 255
+
+        # print(rot)
+        img_vis = np.transpose(img_vis, (1, 2, 0))  # Convert from (C, H, W) to (H, W, C)
+        # img = img[..., ::-1]
+        plt.imshow(img_vis)  # Display image
+        plt.show()
 
     def train(self):
         """
@@ -138,7 +154,7 @@ class Testbed():
         # Load datasets for training and testing
         train_dataset = dataset.load_symmetric_solids_dataset(split='train', transform=transform)
         # test_dataset = dataset.load_symmetric_solids_dataset(split='test', transform=transform)
-        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = self.a.batch_size, shuffle=True)
+        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = self.a.batch_size, shuffle=True, num_workers=20, pin_memory=True)
         # test_loader = torch.utils.data.DataLoader(test_dataset, batch_size = self.a.batch_size)
         
         # Check if CUDA is available and set the device
@@ -146,87 +162,136 @@ class Testbed():
         print(f"Using device: {device}")
 
         # Prepare the model
-        model = self.model
+        model = self.model.to(device)
         model.train()  # Set the model to training mode
-        model = model.to(device)
+
         
         # Define optimizer and learning rate scheduler
         optim = torch.optim.AdamW(model.parameters(), lr=self.a.init_lr)
         lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optim, gamma=self.a.lr_decay_rate)
-        criterion = torch.nn.MSELoss()
+        
+        # Training data
+        train_data_iter = iter(train_loader)
+        img, rot = next(train_data_iter)
+        batch_idx, epoch_idx = 0, 0
 
-        for epoch in range(self.a.epochs):
-            movavg_loss = 0
-            for batch_idx, (img, rot) in enumerate(train_loader):
-                # Prepare the training batch
-                batch = self.get_flat_batch_train(img, rot, self.a.n_slices)
-                img = batch["img"].to(device)
-                rt = batch["rt"].to(device)
-                t = batch["t"].reshape((-1, 1)).to(device)
-                at = batch["at"].to(device)
-                r0 = batch["r0"].to(device)
+        # Record data and write to csv file
+        record_data = []
+        avg_loss = 0
+        # Get the current date and time
+        current_time = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        current_time = '000'
 
-                # # # Display the first image in the batch
-                # img_vis = img[0].cpu().numpy()
-                # img_vis = img_vis + 0.5
-                # # img = images[0].numpy().astype(np.uint8)  # Convert to NumPy array for visualization
-                # # img = (img - img.min()) / (img.max() - img.min()) * 255
-                # print(rot[0])
-                # # print(rot)
-                # img_vis = np.transpose(img_vis, (1, 2, 0))  # Convert from (C, H, W) to (H, W, C)
-                # # img = img[..., ::-1]
-                # plt.imshow(img_vis)  # Display image
-                # plt.show()
+        # Create folder
+        filename = "training.csv"
+        dir_path = os.path.join(".log", current_time)
 
-                # Forward pass: predict score values
-                mu = model(img, rt, t)
+        num_streams = 1
+        streams = [torch.cuda.Stream() for i in range(num_streams)]
+        data = []
 
-                # Set target
-                ta = batch["ta"].to(device)
- 
-                
+        # Training steps (update parameters)
+        for step in tqdm(range(self.a.train_steps), desc="Train loss"):
+            # Prepare the training batch
+            batch = self.get_flat_batch_train(img, rot, self.a.n_slices)
+            img, rt, t, ta = batch["img"], batch["rt"], batch["t"].reshape((-1, 1)), batch['ta']
+            img, rt, t, ta = img.to(device), rt.to(device), t.to(device), ta.to(device)
 
-
-                # Compute loss
-                loss = lie_metrics.distance_fn(ta, mu, self.a.loss_name)
-                # loss = criterion(ta, mu)
-                loss = torch.mean(loss)
-
-                # loss = torch.sum(loss)
-
-
-                # Backpropagation and optimization
-                optim.zero_grad()
-                loss.backward()
-                optim.step()
-                
-                # TODO: Set 5 as parameters
-                if (batch_idx + 1) % 5 == 0:
-                    self.ema_model.update_parameters(model)
-
-                movavg_loss += loss.item()
-
-                # # Inspect gradients
-                # for name, param in model.named_parameters():
-                #     if param.grad is not None:
-                #         print(f"Gradient for {name}:")
-                #         print(param.grad)
-                #     else:
-                #         print(f"No gradient for {name}")
-
-                # Log progress every xxx batches
-                if (batch_idx + 1) % 20 == 0:
-                    print(mu[0], ta[0], rt[0], t[0], r0[0])
-                    print(f"Batch {batch_idx+1}: Train Loss {movavg_loss / 20}")
-                    movavg_loss = 0
+            # img_ch = list(torch.chunk(img, chunks=num_streams))
+            # rt_ch = list(torch.chunk(rt, chunks=num_streams))
+            # t_ch = list(torch.chunk(t, chunks=num_streams))
+            # ta_ch = list(torch.chunk(ta, chunks=num_streams))
             
-            # Update learning rate
-            lr_scheduler.step()
-            current_lr = optim.param_groups[0]['lr']
-            print(f"Epoch {epoch + 1}/{self.a.epochs}: Updated Learning Rate = {current_lr:.6f}")
+            # mu = [0 for i in range(num_streams)]
+            # loss = [0 for i in range(num_streams)]
+
+            # img_vis = img[0].cpu()
+            # self.image_show(img_vis)
+            # print(rot[0])
 
 
+            # Forward pass: predict score values
+            mu = model(img, rt, t)
 
+            # Compute loss
+            loss = torch.mean(lie_metrics.distance_fn(ta, mu, self.a.loss_name))
+            avg_loss += loss.item()
+
+            # Backpropagation and optimization
+            optim.zero_grad()
+            loss.backward()
+            optim.step()
+            # for i in range(num_streams):
+            #     with torch.cuda.stream(streams[i]):
+            #         mu[i] = model(img_ch[i], rt_ch[i], t_ch[i])
+
+            #         # Compute loss
+            #         loss[i] = torch.mean(lie_metrics.distance_fn(ta_ch[i], mu[i], self.a.loss_name))
+            #         avg_loss += loss[i].item()
+
+            #         # Backpropagation and optimization
+            #         loss[i].backward()
+            
+            # for stream in streams:
+            #     stream.synchronize()
+
+
+            
+            # Update ema-model parameters every s steps, [0, s, 2s, ...]
+            if batch_idx % self.a.ema_steps == 0:
+                self.ema_model.update_parameters(model)
+
+            # Get the next batch of image and gt-rotation matrix from train_data_iter
+            try:
+                img, rot = next(train_data_iter)
+            except StopIteration:
+                # Finish iterating all the training data. Next epoch
+                train_data_iter = iter(train_loader)
+                img, rot = next(train_data_iter)
+
+                # Reset batch index and increase epoch index
+                batch_idx = 0
+                epoch_idx += 1
+
+                # Update learning rate
+                lr_scheduler.step()
+                for param_group in optim.param_groups:
+                    param_group['lr'] = max(param_group['lr'], self.a.end_lr)
+                
+                # Print current learning rate
+                current_lr = optim.param_groups[0]['lr']
+                print(f"Epoch {epoch_idx + 1}: Updated Learning Rate = {current_lr:.6f}")
+
+            # Log progress every b batches, [b-1, 2b-1, 3b-1, ...]
+            if (batch_idx + 1) % 20 == 0:
+                tqdm.write(f"Batch {batch_idx+1}: Train Loss {avg_loss / 20}")
+                record_data.append([step + 1, epoch_idx, batch_idx + 1, avg_loss])
+                avg_loss = 0
+            
+            if (step + 1) % self.a.ckpt_steps == 0:
+                model_path = os.path.join(dir_path, f"model_{step + 1}.pth")
+                torch.save(model, model_path)
+                print(f"Save check-point model to '{model_path}'")
+
+            # Update batch index and epoch index
+            batch_idx += 1
+        
+        print("Finish training process!")
+
+
+        file_path = os.path.join(dir_path, filename)
+        os.makedirs(dir_path, exist_ok=True)
+
+        # Save the training information to csv file
+        with open(file_path, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(['step', 'epoch', 'batch', 'loss'])
+            writer.writerows(record_data)
+        
+        print(f"Training info has been saved to '{file_path}'")
+
+        # Save model
+        torch.save(model, os.path.join(dir_path, "model.pth"))
 
 # def main():
 #     random_image = torch.rand(5, 3, 224, 224)

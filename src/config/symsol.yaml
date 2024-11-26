@@ -9,13 +9,21 @@ activ_fn: "leaky_relu"
 # training
 learn_noise: True
 loss_name: "chordal"
-epochs: 150
+train_steps: 400000
+epochs: 18
 batch_size: 16
 n_slices: 256
+ckpt_steps: 50000
 
 # learning rate
 init_lr: 1.0e-4
-lr_decay_rate: 0.1
+lr_decay_rate: 0.95
+end_lr: 1.0e-5
+
+# EMA (Exponential Moving Average)
+ema_enabled: [True]
+ema_steps: 5
+ema_tau: 0.999
 
 # noise schedule
 noise_start: 1.0e-8
