@@ -65,20 +65,18 @@ class PosEmbed(nn.Module):
         emb = torch.log(torch.tensor(10000.0)) / (half_dim - 1)
 
         # Generate log-scale arithmetic sequence, length=half_dim 1.0~1.0e-4
-        log_scale_seq = torch.exp(torch.arange(half_dim, dtype=torch.float32) * -emb)
+        self.log_scale_seq = torch.exp(torch.arange(half_dim, dtype=torch.float32) * -emb)
 
-        self.log_scale_seq = log_scale_seq
         self.mlp = nn.Linear(self.in_feat_dim * self.embed_dim, self.dim, bias=shift)
-
 
     def forward(self, x):
         device = x.device
         x = x.unsqueeze(-1)
-        
+        # print(x.shape)
         emb = x * self.log_scale_seq.to(device)
-
+        # print(emb.shape)
         emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
-        emb = emb.view(emb.shape[:-2] + (-1,)) # Reshaping (N, -1)
+        emb = emb.view((emb.shape[0],) + (-1,)) # Reshaping (N, -1)
         emb = self.mlp(emb)
         return emb
 
@@ -97,6 +95,8 @@ class FourierMlpBlock(nn.Module):
         self.c_dim = c_dim
         self.out_dim = out_dim
         self.linear1 = nn.Linear(self.c_dim, self.out_dim * 2)
+        self.linearx = nn.Linear(self.x_dim, self.out_dim)
+        self.linearc = nn.Linear(self.c_dim, self.out_dim)
         self.linear2 = nn.Linear(self.x_dim, self.out_dim)
         self.linear3 = nn.Linear(self.out_dim, self.out_dim)
         self.linear4 = nn.Linear(self.x_dim, self.out_dim)
@@ -109,22 +109,20 @@ class FourierMlpBlock(nn.Module):
         x = a * torch.cos(x * torch.pi) + b * torch.sin(x * torch.pi)
         x = self.linear3(x)
         return x + self.linear4(x_in)
+        # return F.leaky_relu(self.linearx(x_in) + self.linearc(c))
 
 class Head(nn.Module):
     """
     The head takes current pose as input (x_i), and output the score s(x_i, sigma_i)
-    
-    Args:
+    """
+    def __init__(self, in_dim, dim, n_layers = 1, block_type = 'MlpBlock', activ = 'leaky_relu'):
+        """
+        Args:
         in_dim (int): input of the head
         dim (int): dimension of output of head
         n_layers (int): # of MLP layers
-    """
-    def __init__(self, 
-                 in_dim,
-                 dim,
-                 n_layers = 1,
-                 block_type = 'MlpBlock',
-                 activ = 'leaky_relu'):
+        """
+
         super(Head, self).__init__()
         self.in_dim = in_dim
         self.dim = dim
@@ -144,20 +142,29 @@ class Head(nn.Module):
     def broadcast_batch(self, x, bs):
         batch_size = x.shape[0]
         slices = bs // batch_size
-        x = x.unsqueeze(dim=1)
-        x = x.repeat(1, slices, 1).reshape((-1,) + x.shape[2:])
+        # print(x.shape)
+        x = x.repeat(slices, 1).reshape((-1,) + (x.shape[1], ))
+        # print(x.shape)
         return x
 
-    """
-    Args:
-        img_feat: conditional signal - image (x0 in original code)
-        rt: rotation matrix (use so3 representation)
-        t: conditional signal - time index
-    """
+
     def forward(self, img_feat, rt, t):
+        """
+        Args:
+        img_feat: conditional signal - image (x0 in original code), shape (batch, feat_dim)
+        rt: rotation matrix (use so3 representation), shape (batch * n_slices, 3), e.g., (2048, 3)
+        t: conditional signal - time index, shape (batch * n_slices), e.g., (2048)
+
+        Returns:
+        model output: shape (batch * n_slices, 3) 
+        """
         img_feat = self.broadcast_batch(img_feat, rt.shape[0])
+        # torch.set_printoptions(threshold=torch.inf)
+        # print(t)
         t = self.posEmbedT(t)
+        # print(t.shape)
         x = self.posEmbedRt(rt)
+
         for blockImg, blockT in self.mlpBlocks:
             x = blockT(blockImg(x, img_feat), t)
         x = F.leaky_relu(self.linear(x))
@@ -179,9 +186,12 @@ class Model(nn.Module):
     
     """
     Args:
-        img: input image, N x 3 x 224 x 224
-        rt: N x 3
-        t: N x 1
+    img: conditional signal - image, shape (batch, 3, image_size, image_size), e.g., (16, 3, 224, 224)
+    rt: rotation matrix (use so3 representation), shape (batch * n_slices, 3), e.g., (2048, 3)
+    t: conditional signal - time index, shape (batch * n_slices), e.g., (2048)
+
+    Returns:
+    model output: shape (batch * n_slices, 3) 
     """
     def forward(self, img, rt, t):
         x = self.backbone(img)

@@ -1,1 +1,1 @@
-from . import model, testbed
+from . import testbed
