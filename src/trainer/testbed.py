@@ -245,9 +245,8 @@ class Testbed():
 
         # Load datasets for training and testing
         train_dataset = dataset.load_symmetric_solids_dataset(split='train', transform=transform)
-        # test_dataset = dataset.load_symmetric_solids_dataset(split='test', transform=transform)
-        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = self.a.batch_size, shuffle=True, num_workers=20, pin_memory=True)
-        # test_loader = torch.utils.data.DataLoader(test_dataset, batch_size = self.a.batch_size)
+        # train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = self.a.batch_size, shuffle=True, num_workers=20, pin_memory=True)
+        train_loader = dataset.getDataLoader(train_dataset, batch_size = self.a.batch_size, shuffle=True, num_workers=10)
         
         # Check if CUDA is available and set the device
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -264,7 +263,7 @@ class Testbed():
         
         # Training data
         train_data_iter = iter(train_loader)
-        img, rot = next(train_data_iter)
+        img, rot, _ = next(train_data_iter)
         batch_idx, epoch_idx = 0, 0
 
         # Record data and write to csv file
@@ -336,11 +335,11 @@ class Testbed():
 
             # Get the next batch of image and gt-rotation matrix from train_data_iter
             try:
-                img, rot = next(train_data_iter)
+                img, rot, _ = next(train_data_iter)
             except StopIteration:
                 # Finish iterating all the training data. Next epoch
                 train_data_iter = iter(train_loader)
-                img, rot = next(train_data_iter)
+                img, rot, _ = next(train_data_iter)
 
                 # Reset batch index and increase epoch index
                 batch_idx = 0

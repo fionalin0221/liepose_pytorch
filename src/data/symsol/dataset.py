@@ -230,37 +230,48 @@ class SymmetricSolidsDataset(Dataset):
     def get_equivalent(self, idx):
         return self.metadata[idx]["rotations_equivalent"]
 
-def custom_collate_fn(batch):
-    """
-    Custom collate function to handle varying sizes of rotations_equivalent.
-    """
 
-    images = [torch.tensor(item[0]) for item in batch]  # Stack images
-    rotations = [torch.tensor(item[1]) for item in batch]  # Stack rotations
-    rotations_equivalent = None
-
-    # Keep rotations_equivalent as a list for non-uniform sizes
-    if batch[0][2] is not None:
-        rotations_equivalent = [torch.tensor(item[2]) for item in batch]
-    
-    images = torch.stack(images)
-    rotations = torch.stack(rotations)
-
-    return images, rotations, rotations_equivalent
 
 def load_symmetric_solids_dataset(split='train', transform=None, save=False):
     return SymmetricSolidsDataset(split=split, transform=transform, save=save)
+
+def getDataLoader(dataset, batch_size, shuffle=True, num_workers=1):
+    def custom_collate_fn(batch):
+        """
+        Custom collate function to handle varying sizes of rotations_equivalent.
+        """
+
+        images = [item[0] for item in batch]  # Stack images
+        rotations = [item[1] for item in batch]  # Stack rotations
+        rotations_equivalent = None
+
+        # Keep rotations_equivalent as a list for non-uniform sizes
+        if batch[0][2] is not None:
+            rotations_equivalent = [item[2] for item in batch]
+        
+        images = torch.stack(images)
+        rotations = torch.stack(rotations)
+
+        return images, rotations, rotations_equivalent
+    
+    return torch.utils.data.DataLoader(dataset=dataset, 
+                                       batch_size=batch_size, 
+                                       shuffle=shuffle, 
+                                       num_workers=num_workers, 
+                                       collate_fn=custom_collate_fn
+                                       )
 
 # Main function to test the dataset loader
 def main():
     print("Loading dataset...")
     mode = 'test'
     # dataset = load_symmetric_solids_dataset(split='test', transform=None, save=False)
-    dataset = load_symmetric_solids_dataset(split=mode, transform=None, save=True)
+    dataset = load_symmetric_solids_dataset(split=mode, transform=None, save=False)
     print(f"Dataset has length {len(dataset)}")
 
     batch_size = 2
-    train_loader = torch.utils.data.DataLoader(dataset, batch_size, shuffle=True, collate_fn=custom_collate_fn)
+    # train_loader = torch.utils.data.DataLoader(dataset, batch_size, shuffle=True, collate_fn=custom_collate_fn)
+    train_loader = getDataLoader(dataset, batch_size, shuffle=True)
 
     # print(f"Dataset Info: {dataset.info}")
     print(f"Loading batches with batch size {batch_size}...")
