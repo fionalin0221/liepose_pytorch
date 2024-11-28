@@ -30,3 +30,6 @@ noise_start: 1.0e-8
 noise_end: 1.0
 timesteps: 100
 power: 3.0
+
+# opt
+steps: 100
