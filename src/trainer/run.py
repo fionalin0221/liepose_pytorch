@@ -49,7 +49,7 @@ def main():
     config = get_configs()
 
     testbed = Testbed(config)
-    testbed.train()
+    testbed.test()
 
 
 if __name__ == "__main__":

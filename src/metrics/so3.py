@@ -35,8 +35,9 @@ def as_lie(t) -> SO3:
         return SO3.unit_quaternion_to_SO3(t)
     raise ValueError(t.shape)
 
-
 def as_tan(t)-> Tensor:
+    if is_mat(t):
+        return as_lie(t).log_map()
     if isinstance(t, SO3):
         return t.log_map()
     if is_tan(t):
@@ -89,10 +90,10 @@ def main():
     matrix = SO3.rand(1)
     matrix2 = SO3.rand(2)
     # print(matrix)
-    vector = as_tan(matrix)
+    # vector = as_tan(matrix)
     # vector = vector.unsqueeze(dim=0)
-    mat = as_mat(vector)
-    print(vector.shape, mat.shape)
+    # mat = as_mat(vector)
+    # print(vector.shape, mat.shape)
     # # print(vector)
     # m = as_mat(matrix)
     # m = as_lie(m)
@@ -103,6 +104,10 @@ def main():
     # print(q)
     # m2 = as_lie(q)
     # print(m2)
+
+    # matrix = torch.zeros((1, 3, 3))
+    # tan = as_lie(matrix)
+    # print(tan)
 
 if __name__ == "__main__":
     main()

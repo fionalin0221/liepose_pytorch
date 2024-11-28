@@ -18,7 +18,7 @@ from tqdm import tqdm
 import datetime
 import os
 from torch.amp import autocast, GradScaler
-
+import cv2 as cv
 
 class Testbed():
     def __init__(self, config):
@@ -84,10 +84,10 @@ class Testbed():
         zt = lie_metrics.as_tan(mu)  #size(batch_size*n_slices, 3)
         # r0 = ops.lsub(rt, SO3.exp_map(sigma_t * zt))  #size(batch, 3, 3)
 
-        epsilon = 2e-8
+        epsilon = 2e-10
         step_size = (epsilon * 0.5 * (sigma_t ** 2) / (sigma_L ** 2)).to(rt.device)  #size(batch_size*n_slices, 1)
         noise = (LieDist._sample_unit(n=(size,))).to(rt.device) #size(batch_size*n_slices, 3)
-        print("Noise: ", list(torch.sqrt(2 * step_size) * noise)[0])
+        # print("Noise: ", list(torch.sqrt(2 * step_size) * noise)[0])
         rp = ops.add(rt, SO3.exp_map(step_size * zt + torch.sqrt(2 * step_size) * noise))  #size(batch_size*n_slices, 3, 3)
 
         # r0 = lie_metrics.as_repr(r0, self.a.repr_type) #size(batch, 3)
@@ -95,13 +95,22 @@ class Testbed():
 
         return rp
     
+    def showImage(self, img):
+        # Convert image color
+        img = img + 0.5
+        img_bgr = cv.cvtColor(np.transpose(img[0].cpu().numpy(), (1, 2, 0)), 
+                                cv.COLOR_RGB2BGR)
+
+        cv.imshow("image", img_bgr)
+
     def test(self):
         transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
         ])
-        test_dataset = dataset.load_symmetric_solids_dataset(split='train', transform=transform)
-        test_loader = torch.utils.data.DataLoader(test_dataset, batch_size = self.a.batch_size)
+
+        test_dataset = dataset.load_symmetric_solids_dataset(split='test', transform=transform)
+        test_loader = dataset.getDataLoader(test_dataset, batch_size = self.a.batch_size, shuffle=True, num_workers=10)
 
         cur_time = np.linspace(self.noise_schedule.timesteps, 0, self.a.steps, endpoint = False) -1
         cur_time = cur_time.astype(np.int32).tolist()
@@ -124,8 +133,9 @@ class Testbed():
         with torch.no_grad():
             time_pose = []
             all_final_pose = []
-            for batch_idx, (img, label) in enumerate(test_loader):
-                batch = self.get_flat_batch_test(img, self.a.n_slices)
+            n_slices = 1
+            for batch_idx, (img, rotation, rotations_equivalent) in enumerate(test_loader):
+                batch = self.get_flat_batch_test(img, n_slices)
                 img = batch["img"].to(device)
                 rt = batch["rt"].to(device) #size(batch_size*n_slices, 3)
                 # print(rt)
@@ -134,17 +144,67 @@ class Testbed():
                 # print(features)
 
                 for t, tp in time_seq:
-                    print("Time step ", t)
-                    tt = torch.tensor(np.full([self.a.batch_size * self.a.n_slices, 1], t, dtype = np.int32)).to(device) 
+                    # print("Time step ", t)
+                    tt = torch.tensor(np.full([self.a.batch_size * n_slices, 1], t, dtype = np.int32)).to(device) 
                     mu = head(features, rt, tt)
-                    rt = self.p_sample_apply(mu, rt, t) #size(batch_size*n_slices, 3)
+                    rt = self.p_sample_apply(-mu, rt, t) #size(batch_size*n_slices, 3)
                     time_pose.append(rt[0])
-                    print("Pose: ",rt[0])
-                # print(lie_metrics.as_lie(label[0]))
-                print("Ground Truth: " ,label[0])
-                # print(rt)
-                # all_final_pose.append(rt)
-                break
+                    # print("Pose: ",rt[0])
+
+                # print(time_pose)
+                print("Ground Truth: ", lie_metrics.as_tan(rotation[:1]))
+                print("Predict", rt[0])
+
+                self.showImage(img)
+
+                # Iterate mini-batch
+                rt_idx = 0 # rt_idx is the index of rt, size [batch_size*n_slices, 3]
+                for sample_idx in range(len(img)):
+                    # get ground-truth rotations of current sample
+                    rotations = rotations_equivalent[sample_idx].cpu().numpy()
+                    print("length", len(img), rt.shape[0])
+
+                    # get predicted rotations of current sample
+                    predict_r = lie_metrics.as_mat(rt[rt_idx].unsqueeze(dim=0)).cpu().numpy()[0]
+
+                    # Find the minimum angle from those equivalent answers
+                    min_angle = 1000000
+                    min_rotations_idx = -1
+                    print(f"Find the minimum angle of totally {len(rotations)} possible solutions.")
+
+                    for rot_idx, rotation in enumerate(rotations):
+                        # Compute the relative rotation matrix
+                        R_rel = np.dot(predict_r.T, rotation)
+                        
+                        # Calculate the trace
+                        trace_R_rel = np.trace(R_rel)
+                        
+                        # Compute the angular distance (in radians)
+                        angle = np.degrees(np.arccos((trace_R_rel - 1) / 2))
+                        
+                        if angle < min_angle:
+                            min_angle = angle
+                            min_rotations_idx = rot_idx
+
+                    # Update index of rt
+                    rt_idx += 1
+
+                    print(f"Minimum angle: {min_angle}, \npredict: \n{predict_r}, \nmin-corresponding answer: \n{rotations[min_rotations_idx]}")
+                    break
+
+
+                # Wait for user input
+                key = cv.waitKey(0)
+                if key == ord('q'):
+                    print("Exiting...")
+                    break
+                elif key == ord(' '):
+                    print("Next image...")
+                    cv.destroyAllWindows()
+                
+
+
+
 
     # --- train ---
     def get_flat_batch_train(self, img, rot, n_slices):

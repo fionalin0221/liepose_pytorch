@@ -215,7 +215,7 @@ class SymmetricSolidsDataset(Dataset):
             else torch.tensor(entry["rotation"], dtype=torch.float32)
         )
         if self.split == 'test':
-            rotations_equivalent = entry['rotations_equivalent']
+            rotations_equivalent = torch.tensor(entry['rotations_equivalent'])
 
         # Load the image with PIL-library and convert it to a numpy array
         image = Image.open(image_path).convert("RGB")  # H, W, C
