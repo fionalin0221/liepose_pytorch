@@ -152,8 +152,8 @@ class Head(nn.Module):
         """
         Args:
         img_feat: conditional signal - image (x0 in original code), shape (batch, feat_dim)
-        rt: rotation matrix (use so3 representation), shape (batch * n_slices, 3), e.g., (2048, 3)
-        t: conditional signal - time index, shape (batch * n_slices), e.g., (2048)
+        rt: rotation matrix (use so3 representation), shape (batch * n_slices, 3), e.g., (4096, 3)
+        t: conditional signal - time index, shape (batch * n_slices), e.g., (4096)
 
         Returns:
         model output: shape (batch * n_slices, 3) 
