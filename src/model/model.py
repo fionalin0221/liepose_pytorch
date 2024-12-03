@@ -54,7 +54,7 @@ class PosEmbed(nn.Module):
         embed_dim (int): embedding-dim of each element of feature,
                     so the input of linear layer is in_feat_dim * embed_dim
         dim (int): output dimension
-        shift: ??
+        shift: whether to use bias
     """
     def __init__(self, in_feat_dim, embed_dim, dim, shift=True):
         super(PosEmbed, self).__init__()
@@ -110,13 +110,13 @@ class FourierMlpBlock(nn.Module):
 
     # The input dimensional of x_in and c are the same??
     def forward(self, x_in, c):
-        c = self.linear1(F.silu(c))
-        a, b = c.chunk(2, dim=-1)
-        x = self.linear2(F.leaky_relu(x_in))
-        x = a * torch.cos(x * torch.pi) + b * torch.sin(x * torch.pi)
-        x = self.linear3(x)
-        return x + self.linear4(x_in)
-        # return F.leaky_relu(self.linearx(x_in) + self.linearc(c))
+        # c = self.linear1(F.silu(c))
+        # a, b = c.chunk(2, dim=-1)
+        # x = self.linear2(F.leaky_relu(x_in))
+        # x = a * torch.cos(x * torch.pi) + b * torch.sin(x * torch.pi)
+        # x = self.linear3(x)
+        # return x + self.linear4(x_in)
+        return F.leaky_relu(self.linearx(x_in) + self.linearc(c))
 
 class Head(nn.Module):
     """

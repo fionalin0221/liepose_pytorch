@@ -334,7 +334,7 @@ class Testbed():
         avg_loss = 0
         # Get the current date and time
         current_time = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        current_time = '000'
+        # current_time = '000'
 
         # Create folder
         filename = "training.csv"
