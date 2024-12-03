@@ -44,7 +44,7 @@ class Backbone(nn.Module):
         x = self.backbone(x)
         x = self.conv(x)
         x = x.reshape((x.shape[0], -1))
-        x = F.leaky_relu(self.linear(x))
+        x = self.linear(F.leaky_relu(x))
         return x
 
 class PosEmbed(nn.Module):
@@ -54,7 +54,7 @@ class PosEmbed(nn.Module):
         embed_dim (int): embedding-dim of each element of feature,
                     so the input of linear layer is in_feat_dim * embed_dim
         dim (int): output dimension
-        shift: ??
+        shift: whether to use bias
     """
     def __init__(self, in_feat_dim, embed_dim, dim, shift=True):
         super(PosEmbed, self).__init__()
@@ -69,16 +69,21 @@ class PosEmbed(nn.Module):
 
         self.mlp = nn.Linear(self.in_feat_dim * self.embed_dim, self.dim, bias=shift)
 
+        # debug
+        self.linear = nn.Linear(self.in_feat_dim, self.dim)
+
     def forward(self, x):
-        device = x.device
-        x = x.unsqueeze(-1)
-        # print(x.shape)
-        emb = x * self.log_scale_seq.to(device)
-        # print(emb.shape)
-        emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
-        emb = emb.view((emb.shape[0],) + (-1,)) # Reshaping (N, -1)
-        emb = self.mlp(emb)
-        return emb
+        # device = x.device
+        # x = x.unsqueeze(-1)
+        # # print(x.shape)
+        # emb = x * self.log_scale_seq.to(device)
+        # # print(emb.shape)
+        # emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
+        # emb = emb.view((emb.shape[0], -1)) # Reshaping (N, -1)
+        # # print(emb.shape)
+        # emb = self.mlp(emb)
+        # return emb
+        return self.linear(x)
 
 class FourierMlpBlock(nn.Module):
     """
@@ -95,21 +100,23 @@ class FourierMlpBlock(nn.Module):
         self.c_dim = c_dim
         self.out_dim = out_dim
         self.linear1 = nn.Linear(self.c_dim, self.out_dim * 2)
-        self.linearx = nn.Linear(self.x_dim, self.out_dim)
-        self.linearc = nn.Linear(self.c_dim, self.out_dim)
         self.linear2 = nn.Linear(self.x_dim, self.out_dim)
         self.linear3 = nn.Linear(self.out_dim, self.out_dim)
         self.linear4 = nn.Linear(self.x_dim, self.out_dim)
 
+        # debug
+        self.linearx = nn.Linear(self.x_dim, self.out_dim)
+        self.linearc = nn.Linear(self.c_dim, self.out_dim)
+
     # The input dimensional of x_in and c are the same??
     def forward(self, x_in, c):
-        c = F.leaky_relu(self.linear1(c))
-        a, b = c.chunk(2, dim=-1)
-        x = F.leaky_relu(self.linear2(x_in))
-        x = a * torch.cos(x * torch.pi) + b * torch.sin(x * torch.pi)
-        x = self.linear3(x)
-        return x + self.linear4(x_in)
-        # return F.leaky_relu(self.linearx(x_in) + self.linearc(c))
+        # c = self.linear1(F.silu(c))
+        # a, b = c.chunk(2, dim=-1)
+        # x = self.linear2(F.leaky_relu(x_in))
+        # x = a * torch.cos(x * torch.pi) + b * torch.sin(x * torch.pi)
+        # x = self.linear3(x)
+        # return x + self.linear4(x_in)
+        return F.leaky_relu(self.linearx(x_in) + self.linearc(c))
 
 class Head(nn.Module):
     """
@@ -142,9 +149,10 @@ class Head(nn.Module):
     def broadcast_batch(self, x, bs):
         batch_size = x.shape[0]
         slices = bs // batch_size
+
+        x = x.repeat(slices, 1)
         # print(x.shape)
-        x = x.repeat(slices, 1).reshape((-1,) + (x.shape[1], ))
-        # print(x.shape)
+        # x = x.repeat(slices, 1).reshape((-1,) + (x.shape[1], ))
         return x
 
 
@@ -159,15 +167,18 @@ class Head(nn.Module):
         model output: shape (batch * n_slices, 3) 
         """
         img_feat = self.broadcast_batch(img_feat, rt.shape[0])
+        # print(img_feat[:512, 0])
         # torch.set_printoptions(threshold=torch.inf)
-        # print(t)
+
+        t = t.float()
         t = self.posEmbedT(t)
-        # print(t.shape)
         x = self.posEmbedRt(rt)
 
         for blockImg, blockT in self.mlpBlocks:
             x = blockT(blockImg(x, img_feat), t)
-        x = F.leaky_relu(self.linear(x))
+
+        x = self.linear(F.leaky_relu(x))
+
         return x
 
 class Model(nn.Module):

@@ -9,10 +9,10 @@ activ_fn: "leaky_relu"
 # training
 learn_noise: True
 loss_name: "chordal"
-train_steps: 400000
+train_steps: 300000
 epochs: 18
 batch_size: 16
-n_slices: 256
+n_slices: 64
 ckpt_steps: 50000
 
 # learning rate

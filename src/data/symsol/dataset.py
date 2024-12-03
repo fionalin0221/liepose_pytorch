@@ -206,14 +206,18 @@ class SymmetricSolidsDataset(Dataset):
         """
         # get the sample from the dataset
         entry = self.metadata[idx]
+
+        # Retrive image_path from entry
         image_path = entry["image_path"]
 
+        # Retrive rotation and rotations_equivalent from entry
         rotation, rotations_equivalent = None, None
         rotation = (
             torch.tensor(entry["label"], dtype=torch.float32) 
             if self.split == 'train' 
             else torch.tensor(entry["rotation"], dtype=torch.float32)
         )
+        
         if self.split == 'test':
             rotations_equivalent = torch.tensor(entry['rotations_equivalent'])
 
@@ -235,7 +239,7 @@ class SymmetricSolidsDataset(Dataset):
 def load_symmetric_solids_dataset(split='train', transform=None, save=False):
     return SymmetricSolidsDataset(split=split, transform=transform, save=save)
 
-def getDataLoader(dataset, batch_size, shuffle=True, num_workers=1):
+def getDataLoader(dataset, batch_size, shuffle=True, num_workers=0):
     def custom_collate_fn(batch):
         """
         Custom collate function to handle varying sizes of rotations_equivalent.
@@ -264,9 +268,13 @@ def getDataLoader(dataset, batch_size, shuffle=True, num_workers=1):
 # Main function to test the dataset loader
 def main():
     print("Loading dataset...")
-    mode = 'test'
+    mode = 'train'
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
+    ])
     # dataset = load_symmetric_solids_dataset(split='test', transform=None, save=False)
-    dataset = load_symmetric_solids_dataset(split=mode, transform=None, save=False)
+    dataset = load_symmetric_solids_dataset(split=mode, transform=transform, save=False)
     print(f"Dataset has length {len(dataset)}")
 
     batch_size = 2
@@ -286,6 +294,9 @@ def main():
             rotations_equivalent = rotations_equivalent[0]
             print(rotations_equivalent.shape)
             print(rotations_equivalent[:3])
+        
+        img = np.transpose(img, (1, 2, 0))
+        img = img + 0.5
 
         # Convert image color
         img_bgr = cv.cvtColor(img, cv.COLOR_RGB2BGR)
