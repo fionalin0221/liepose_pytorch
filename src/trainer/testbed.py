@@ -10,6 +10,8 @@ from ..metrics import so3 as lie_metrics
 from ..model import Model
 from ..noise import PowerNoiseSchedule
 from ..utils import ops
+from ..visualizer import visualize_so3_probabilities
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch.jit
@@ -68,7 +70,6 @@ class Testbed():
 
         batch["img"] = img
         batch["rt"] = torch.cat(rts, dim = 0)  #size(batch*n_slice, 3)
-        # print(batch["rt"].shape)
         return batch
 
     def p_sample_apply(self, mu, rt, t):
@@ -85,10 +86,9 @@ class Testbed():
         zt = lie_metrics.as_tan(mu)  #size(batch_size*n_slices, 3)
         # r0 = ops.lsub(rt, SO3.exp_map(sigma_t * zt))  #size(batch, 3, 3)
 
-        epsilon = 2e-6
+        epsilon = 1e-7
         step_size = (epsilon * 0.5 * (sigma_t ** 2) / (sigma_L ** 2)).to(rt.device)  #size(batch_size*n_slices, 1)
         noise = (LieDist._sample_unit(n=(size,))).to(rt.device) #size(batch_size*n_slices, 3)
-        # print("Noise: ", list(torch.sqrt(2 * step_size) * noise)[0])
         rp = ops.add(rt, SO3.exp_map(step_size * zt / sigma_t.to(rt.device) + torch.sqrt(2 * step_size) * noise))  #size(batch_size*n_slices, 3, 3)
 
         # r0 = lie_metrics.as_repr(r0, self.a.repr_type) #size(batch, 3)
@@ -97,11 +97,11 @@ class Testbed():
         return rp
     
     def showImage(self, img):
-        # Convert image color
+        # [-0.5, 0.5] -> [0, 1]
         img = img + 0.5
-        img_bgr = cv.cvtColor(np.transpose(img[0].cpu().numpy(), (1, 2, 0)), 
-                                cv.COLOR_RGB2BGR)
 
+        # Convert image color, RGB->BGR
+        img_bgr = cv.cvtColor(np.transpose(img[0].cpu().numpy(), (1, 2, 0)), cv.COLOR_RGB2BGR)
         cv.imshow("image", img_bgr)
 
     def test(self):
@@ -122,8 +122,10 @@ class Testbed():
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {device}")
 
-        model = self.model
-        model = torch.load(".log/000/model_250000.pth")
+        # model = self.model
+
+        # Load weights
+        model = torch.load(".log/2024-12-03_16-21-07/model.pth", weights_only=False)
         model.eval()
 
         backbone = model.backbone
@@ -135,35 +137,28 @@ class Testbed():
             time_pose = []
             all_final_pose = []
             n_slices = 1
+
             for batch_idx, (img, rotation, rotations_equivalent) in enumerate(test_loader):
                 batch = self.get_flat_batch_test(img, n_slices)
                 img = batch["img"].to(device)
                 rt = batch["rt"].to(device) #size(batch_size*n_slices, 3)
-                # print(rt)
 
+                # get features of image via backbone network
                 features = backbone(img)
-                # print(features)
 
+                # Denoised pose
                 for t, tp in time_seq:
-                    # print("Time step ", t)
                     tt = torch.tensor(np.full([self.a.batch_size * n_slices, 1], t, dtype = np.int32)).to(device) 
                     mu = head(features, rt, tt)
-                    rt = self.p_sample_apply(-mu, rt, t) #size(batch_size*n_slices, 3)
+                    rt = self.p_sample_apply(mu, rt, t) #size(batch_size*n_slices, 3)
                     time_pose.append(rt[0])
                     print(f"Time step: {t}, Pose: {rt[0]}")
-
-                # print(time_pose)
-                print("Ground Truth: ", lie_metrics.as_tan(rotation[:1]))
-                print("Predict", rt[0])
-
-                self.showImage(img)
 
                 # Iterate mini-batch
                 rt_idx = 0 # rt_idx is the index of rt, size [batch_size*n_slices, 3]
                 for sample_idx in range(len(img)):
                     # get ground-truth rotations of current sample
                     rotations = rotations_equivalent[sample_idx].cpu().numpy()
-                    print("length", len(img), rt.shape[0])
 
                     # get predicted rotations of current sample
                     predict_r = lie_metrics.as_mat(rt[rt_idx].unsqueeze(dim=0)).cpu().numpy()[0]
@@ -193,6 +188,7 @@ class Testbed():
                     print(f"Minimum angle: {min_angle}, \npredict: \n{predict_r}, \nmin-corresponding answer: \n{rotations[min_rotations_idx]}")
                     break
 
+                self.showImage(img)
 
                 # Wait for user input
                 key = cv.waitKey(0)
@@ -202,7 +198,103 @@ class Testbed():
                 elif key == ord(' '):
                     print("Next image...")
                     cv.destroyAllWindows()
-                
+
+    def visualize(self):
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
+        ])
+
+        batch_size = self.a.batch_size
+        test_dataset = dataset.load_symmetric_solids_dataset(split='test', transform=transform)
+        test_loader = dataset.getDataLoader(test_dataset, batch_size = batch_size, shuffle=True, num_workers=10)
+
+        cur_time = np.linspace(self.noise_schedule.timesteps, 0, self.a.steps, endpoint = False) -1
+        cur_time = cur_time.astype(np.int32).tolist()
+        prev_time = cur_time[1:] + [0]
+        time_seq = list(zip(cur_time, prev_time))
+
+        # Check if CUDA is available and set the device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Load weights
+        model = torch.load(".log/2024-12-03_16-21-07/model.pth", weights_only=False)
+        model.eval()
+
+        backbone, head = model.backbone, model.head
+        backbone, head = backbone.to(device), head.to(device)
+
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6), gridspec_kw={'width_ratios': [1, 2]})
+
+        # Remove axis ticks and labels
+        for spine in axs[1].spines.values():
+            spine.set_visible(False)
+        axs[1].set_xticks([])
+        axs[1].set_yticks([])
+        axs[1].set_xticklabels([])
+        axs[1].set_yticklabels([])
+        plt.show(block=False)
+
+        with torch.no_grad():
+            time_pose = []
+            n_slices = 500
+
+            for batch_idx, (img, _, rotations_equivalent) in enumerate(test_loader):
+                batch = self.get_flat_batch_test(img, n_slices)
+                img = batch["img"].to(device)
+                rt = batch["rt"].to(device) #size(batch_size*n_slices, 3)
+
+                # get features of image via backbone network
+                features = backbone(img)
+
+                # Denoised pose
+                for t, tp in time_seq:
+                    tt = torch.tensor(np.full([self.a.batch_size * n_slices, 1], t, dtype = np.int32)).to(device) 
+                    mu = head(features, rt, tt)
+                    rt = self.p_sample_apply(mu, rt, t) #size(batch_size*n_slices, 3)
+                    time_pose.append(rt[0])
+                    # print(f"Time step: {t}, Pose: {rt[0]}")
+
+                # Iterate mini-batch
+                rt_idx = 0 # rt_idx is the index of rt, size [batch_size*n_slices, 3]
+                predict_r = lie_metrics.as_mat(rt).cpu().numpy()
+                for sample_idx in range(len(img)):
+                    # get ground-truth rotations of current sample
+                    rotations = rotations_equivalent[sample_idx].cpu().numpy()
+
+                    # get predicted rotations of current sample
+                    predict_r_sample = np.array([predict_r[sample_idx + i * batch_size] for i in range(n_slices)])
+
+                    # [-0.5, 0.5] -> [0, 1]
+                    img_rgb = img[sample_idx] + 0.5
+
+                    # Convert image color, RGB->BGR
+                    img_bgr = cv.cvtColor(np.transpose(img_rgb.cpu().numpy(), (1, 2, 0)), cv.COLOR_RGB2BGR)
+
+                    # Show the imae on the left
+                    axs[0].imshow(img_bgr)
+                    axs[0].axis('off')
+                    axs[0].set_title("Image")
+                    
+                    fig, ax = visualize_so3_probabilities(predict_r_sample, fig=fig)
+                    axs[1].set_title("SO3 probability distribution")
+                    plt.draw()
+
+                    # Wait for user input
+                    user_input = input("Enter key: ").strip().lower()
+                    
+                    if user_input == 'q':
+                        print("Exiting...")
+                        return
+                    elif user_input == ' ':
+                        print("Next image...")
+                        axs[0].clear()
+                        axs[1].clear()
+
+                    # Update index of rt
+                    rt_idx += 1
+
+
 
 
 
@@ -226,17 +318,14 @@ class Testbed():
             - "r0" (torch.Tensor): Ground truth rotations in Lie algebra space, size (batch_size * n_slices, 3), e.g., (2048, 3)
         """
         batch = {}
-
         rts, ts, zts, r0s, tas = [], [], [], [], []
-
-        # torch.manual_seed(42)
 
         batch_size = img.shape[0]
         for _ in range(n_slices):
-
             # Sample random timesteps for size = batch_size
             t = torch.randint(low=0, high=self.noise_schedule.timesteps, size=(batch_size,)) #size(batch,)
             # t = torch.tensor([50] * batch_size)
+
             # Convert rotations to SO(3) representation, type: SO3, size: (batch, 3, 3)
             r0 = lie_metrics.as_lie(rot) 
             
@@ -245,15 +334,13 @@ class Testbed():
 
             # alphat = torch.tensor(self.noise_schedule.alphas[t]).unsqueeze(1)
             sqrt_alphas_t = torch.tensor(self.noise_schedule.sqrt_alphas[t]).unsqueeze(1)
-            # print(sqrt_alphas_t)
 
-            # ta = lie_metrics.as_tan(r0)
-            # ta = -1 / sqrt_alphas_t * zt
+            # Target of model, formula(9) from paper in 2024 CVPR (Confronting Ambiguity...)
             ta = -zt
+            # ta = -1 / sqrt_alphas_t * zt
 
             # Add noise to rotations, type: SO3, size: (batch, 3, 3)
             rt = ops.add(r0, SO3.exp_map(sqrt_alphas_t * zt))
-            # print('zt:', zt,'\nrt', SO3.exp_map(sqrt_alphas_t * zt), '\nr0', r0)
 
             # Convert rotation_0, rotation_t, noise_t into the specified representation
             r0 = lie_metrics.as_repr(r0, self.a.repr_type) # size(batch, 3)
@@ -261,7 +348,6 @@ class Testbed():
             rt = lie_metrics.as_repr(rt, self.a.repr_type) # size(batch, 3)
             ta = lie_metrics.as_repr(ta, self.a.repr_type)
 
-            # print(r0,'\n', rt,'\n', t)
             # Collect the slices
             rts.append(rt)
             ts.append(t)
@@ -269,9 +355,7 @@ class Testbed():
             r0s.append(r0)
             tas.append(ta)
 
-            # print(alphat, ta, zt)
-
-        # Concatenate slices and add them to the batch
+        # Concatenate slices and add them to the batch, e.g. [img1-1, img1-2, img1-3, ..., img2-1, img2-2, ...]
         batch["img"] = img
         batch["rt"] = torch.cat(rts, dim=0)
         batch["t"] = torch.cat(ts, dim=0)
@@ -279,22 +363,7 @@ class Testbed():
         batch["r0"] = torch.cat(r0s, dim=0)
         batch["ta"] = torch.cat(tas, dim=0)
 
-        # print(batch['img'].shape, batch['rt'].shape, batch['t'].shape, batch['zt'].shape, batch['r0'].shape)
-        
         return batch
-
-    def image_show(self, img):
-        # # # Display the first image in the batch
-        img_vis = img.numpy()
-        img_vis = img_vis + 0.5
-        # img = images[0].numpy().astype(np.uint8)  # Convert to NumPy array for visualization
-        # img = (img - img.min()) / (img.max() - img.min()) * 255
-
-        # print(rot)
-        img_vis = np.transpose(img_vis, (1, 2, 0))  # Convert from (C, H, W) to (H, W, C)
-        # img = img[..., ::-1]
-        plt.imshow(img_vis)  # Display image
-        plt.show()
 
     def train(self):
         """
@@ -308,7 +377,6 @@ class Testbed():
 
         # Load datasets for training and testing
         train_dataset = dataset.load_symmetric_solids_dataset(split='train', transform=transform)
-        # train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = self.a.batch_size, shuffle=True, num_workers=20, pin_memory=True)
         train_loader = dataset.getDataLoader(train_dataset, batch_size = self.a.batch_size, shuffle=False, num_workers=10)
         
         # Check if CUDA is available and set the device
@@ -332,9 +400,10 @@ class Testbed():
         # Record data and write to csv file
         record_data = []
         avg_loss = 0
+
         # Get the current date and time
         current_time = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        # current_time = '000'
+        current_time = '000'
 
         # Create folder
         filename = "training.csv"
@@ -343,104 +412,73 @@ class Testbed():
         file_path = os.path.join(dir_path, filename)
         os.makedirs(dir_path, exist_ok=True)
 
-        # streams = [torch.cuda.Stream() for i in range(num_streams)]
-        # data = []
-
         torch.manual_seed(42)
 
-        # Training steps (update parameters)
-        for step in tqdm(range(self.a.train_steps), desc="Train loss"):
-            # Prepare the training batch
-            batch = self.get_flat_batch_train(img, rot, self.a.n_slices)
-            img, rt, t, ta = batch["img"], batch["rt"], batch["t"].reshape((-1, 1)), batch['ta']
-            img, rt, t, ta = img.to(device), rt.to(device), t.to(device), ta.to(device)
+        with tqdm(total=self.a.train_steps, desc="Train loss: ", dynamic_ncols=True) as pbar:
+            # Training steps (update parameters)
+            for step in range(self.a.train_steps):
+                # Prepare the training batch
+                batch = self.get_flat_batch_train(img, rot, self.a.n_slices)
+                img, rt, t, ta = batch["img"], batch["rt"], batch["t"].reshape((-1, 1)), batch['ta']
+                img, rt, t, ta = img.to(device), rt.to(device), t.to(device), ta.to(device)
 
-            # print(rt[:64, :2], ta[:64, 2])
-        
-            # mu = [0 for i in range(num_streams)]
-            # loss = [0 for i in range(num_streams)]
+                # Forward pass: predict score values
+                mu = model(img, rt, t)
 
-            # img_vis = img[0].cpu()
-            # self.image_show(img_vis)
-            # print(rot[0])
+                # Compute loss
+                loss = torch.mean(lie_metrics.distance_fn(ta, mu, self.a.loss_name))
+                avg_loss += loss.item()
 
-            # Forward pass: predict score values
-
-            mu = model(img, rt, t)
-
-            # print(mu[:2, :5], ta[:2, :5])
-            # print(img[:2, 0, 0, 0], rt[:2], t[:2], mu[:2])
-
-            
-            # print(t.shape)
-
-            # Compute loss
-            loss = torch.mean(lie_metrics.distance_fn(ta, mu, self.a.loss_name))
-            avg_loss += loss.item()
-
-            # Backpropagation and optimization
-            optim.zero_grad()
-            loss.backward()
-            optim.step()
-            # for i in range(num_streams):
-            #     with torch.cuda.stream(streams[i]):
-            #         mu[i] = model(img_ch[i], rt_ch[i], t_ch[i])
-
-            #         # Compute loss
-            #         loss[i] = torch.mean(lie_metrics.distance_fn(ta_ch[i], mu[i], self.a.loss_name))
-            #         avg_loss += loss[i].item()
-
-            #         # Backpropagation and optimization
-            #         loss[i].backward()
-            
-            # for stream in streams:
-            #     stream.synchronize()
-
-
-            
-            # Update ema-model parameters every s steps, [0, s, 2s, ...]
-            if batch_idx % self.a.ema_steps == 0:
-                self.ema_model.update_parameters(model)
-
-            # Get the next batch of image and gt-rotation matrix from train_data_iter
-            try:
-                img, rot, _ = next(train_data_iter)
-            except StopIteration:
-                # Finish iterating all the training data. Next epoch
-                train_data_iter = iter(train_loader)
-                img, rot, _ = next(train_data_iter)
-
-                # Reset batch index and increase epoch index
-                batch_idx = 0
-                epoch_idx += 1
-
-                # Update learning rate
-                lr_scheduler.step()
-                for param_group in optim.param_groups:
-                    param_group['lr'] = max(param_group['lr'], self.a.end_lr)
+                # Backpropagation and optimization
+                optim.zero_grad()
+                loss.backward()
+                optim.step()
                 
-                # Print current learning rate
-                current_lr = optim.param_groups[0]['lr']
-                print(f"Epoch {epoch_idx + 1}: Updated Learning Rate = {current_lr:.6f}")
+                # Update ema-model parameters every s steps, [0, s, 2s, ...]
+                if batch_idx % self.a.ema_steps == 0:
+                    self.ema_model.update_parameters(model)
 
-            # Log progress every b batches, [b-1, 2b-1, 3b-1, ...]
-            if (batch_idx + 1) % 20 == 0:
-                tqdm.write(f"Batch {batch_idx+1}: Train Loss {avg_loss / 20}")
-                record_data.append([step + 1, epoch_idx, batch_idx + 1, avg_loss])
-                avg_loss = 0
-            
-            if (step + 1) % self.a.ckpt_steps == 0:
-                model_path = os.path.join(dir_path, f"model_{step + 1}.pth")
-                torch.save(model, model_path)
-                print(f"Save check-point model to '{model_path}'")
+                # Get the next batch of image and gt-rotation matrix from train_data_iter
+                try:
+                    img, rot, _ = next(train_data_iter)
+                except StopIteration:
+                    # Finish iterating all the training data. Next epoch
+                    train_data_iter = iter(train_loader)
+                    img, rot, _ = next(train_data_iter)
 
-            # Update batch index and epoch index
-            batch_idx += 1
+                    # Reset batch index and increase epoch index
+                    batch_idx = 0
+                    epoch_idx += 1
+
+                    # Update learning rate
+                    lr_scheduler.step()
+                    for param_group in optim.param_groups:
+                        param_group['lr'] = max(param_group['lr'], self.a.end_lr)
+                    
+                    # Print current learning rate
+                    current_lr = optim.param_groups[0]['lr']
+                    print(f"Epoch {epoch_idx + 1}: Updated Learning Rate = {current_lr:.6f}")
+
+                # Update tqdm description and progress
+                pbar.set_description(f"Train loss: {loss:.4f}")
+                pbar.update(1)
+                
+                # Log progress every b batches, [b-1, 2b-1, 3b-1, ...]
+                if (batch_idx + 1) % 20 == 0:
+                    tqdm.write(f"Batch {batch_idx+1}: Train Loss {avg_loss / 20}")
+                    record_data.append([step + 1, epoch_idx, batch_idx + 1, avg_loss / 20])
+                    avg_loss = 0
+                
+                # save check-point model
+                if (step + 1) % self.a.ckpt_steps == 0:
+                    model_path = os.path.join(dir_path, f"model_{step + 1}.pth")
+                    torch.save(model, model_path)
+                    print(f"Save check-point model to '{model_path}'")
+
+                # Update batch index and epoch index
+                batch_idx += 1
         
         print("Finish training process!")
-
-
-
 
         # Save the training information to csv file
         with open(file_path, mode='w', newline='') as file:
@@ -452,31 +490,3 @@ class Testbed():
 
         # Save model
         torch.save(model, os.path.join(dir_path, "model.pth"))
-
-# def main():
-#     random_image = torch.rand(5, 3, 224, 224)
-#     rot = torch.randn((5, 3, 3))
-    
-#     class A():
-#         def __init__(self):
-#             self.repr_type = "tan"
-#             self.noise_start = 1e-8
-#             self.noise_end = 1.0
-#             self.timesteps = 100
-#             self.power = 3.0
-#             self.img_res = 224
-#             self.resnet_depth = 34
-#             self.mlp_layers = 1
-#             self.fourier_block = True
-#             self.activ_fn = "leaky_relu"
-#             self.learn_noise = True
-#             self.loss_name = "chordal"
-#             self.batch_size = 128
-#             self.epoch = 150
-
-#     a = A()
-#     test = Testbed(a)
-#     test.get_flat_batch_train(random_image, rot, 10)
-
-# if __name__ == "__main__":
-#     main()
