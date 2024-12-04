@@ -10,6 +10,8 @@ from ..metrics import so3 as lie_metrics
 from ..model import Model
 from ..noise import PowerNoiseSchedule
 from ..utils import ops
+from ..visualizer import visualize_so3_probabilities
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch.jit
@@ -196,7 +198,107 @@ class Testbed():
                 elif key == ord(' '):
                     print("Next image...")
                     cv.destroyAllWindows()
-                
+
+    def visualize(self):
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
+        ])
+
+        batch_size = self.a.batch_size
+        test_dataset = dataset.load_symmetric_solids_dataset(split='test', transform=transform)
+        test_loader = dataset.getDataLoader(test_dataset, batch_size = batch_size, shuffle=True, num_workers=10)
+
+        cur_time = np.linspace(self.noise_schedule.timesteps, 0, self.a.steps, endpoint = False) -1
+        cur_time = cur_time.astype(np.int32).tolist()
+        prev_time = cur_time[1:] + [0]
+        time_seq = list(zip(cur_time, prev_time))
+
+        # Check if CUDA is available and set the device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Load weights
+        model = torch.load(".log/2024-12-03_16-21-07/model.pth", weights_only=False)
+        model.eval()
+
+        backbone, head = model.backbone, model.head
+        backbone, head = backbone.to(device), head.to(device)
+
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6), gridspec_kw={'width_ratios': [1, 2]})
+
+        # Remove axis ticks and labels
+        for spine in axs[1].spines.values():
+            spine.set_visible(False)
+        axs[1].set_xticks([])
+        axs[1].set_yticks([])
+        axs[1].set_xticklabels([])
+        axs[1].set_yticklabels([])
+        plt.show(block=False)
+
+        with torch.no_grad():
+            time_pose = []
+            n_slices = 500
+
+            for batch_idx, (img, _, rotations_equivalent) in enumerate(test_loader):
+                batch = self.get_flat_batch_test(img, n_slices)
+                img = batch["img"].to(device)
+                rt = batch["rt"].to(device) #size(batch_size*n_slices, 3)
+
+                # get features of image via backbone network
+                features = backbone(img)
+
+                # Denoised pose
+                for t, tp in time_seq:
+                    tt = torch.tensor(np.full([self.a.batch_size * n_slices, 1], t, dtype = np.int32)).to(device) 
+                    mu = head(features, rt, tt)
+                    rt = self.p_sample_apply(mu, rt, t) #size(batch_size*n_slices, 3)
+                    time_pose.append(rt[0])
+                    # print(f"Time step: {t}, Pose: {rt[0]}")
+
+                # Iterate mini-batch
+                rt_idx = 0 # rt_idx is the index of rt, size [batch_size*n_slices, 3]
+                predict_r = lie_metrics.as_mat(rt).cpu().numpy()
+                for sample_idx in range(len(img)):
+                    # get ground-truth rotations of current sample
+                    rotations = rotations_equivalent[sample_idx].cpu().numpy()
+
+                    # get predicted rotations of current sample
+                    predict_r_sample = np.array([predict_r[sample_idx + i * batch_size] for i in range(n_slices)])
+
+                    # [-0.5, 0.5] -> [0, 1]
+                    img_rgb = img[sample_idx] + 0.5
+
+                    # Convert image color, RGB->BGR
+                    img_bgr = cv.cvtColor(np.transpose(img_rgb.cpu().numpy(), (1, 2, 0)), cv.COLOR_RGB2BGR)
+
+                    # Show the imae on the left
+                    axs[0].imshow(img_bgr)
+                    axs[0].axis('off')
+                    axs[0].set_title("Image")
+                    
+                    fig, ax = visualize_so3_probabilities(predict_r_sample, fig=fig)
+                    axs[1].set_title("SO3 probability distribution")
+                    plt.draw()
+
+                    # Wait for user input
+                    user_input = input("Enter key: ").strip().lower()
+                    
+                    if user_input == 'q':
+                        print("Exiting...")
+                        return
+                    elif user_input == ' ':
+                        print("Next image...")
+                        axs[0].clear()
+                        axs[1].clear()
+
+                    # Update index of rt
+                    rt_idx += 1
+
+
+
+
+
+
     # --- train ---
     def get_flat_batch_train(self, img, rot, n_slices):
         """
