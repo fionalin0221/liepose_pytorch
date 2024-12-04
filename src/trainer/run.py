@@ -1,5 +1,4 @@
 from .testbed import Testbed
-import torch
 import argparse
 import yaml
 from types import SimpleNamespace
@@ -42,15 +41,12 @@ def get_configs(desc="Liepose"):
 # Main function to execute the training process
 def main():
 
-    random_image = torch.rand(5, 3, 224, 224)
-    rot = torch.randn((5, 3, 3))
-    
     # Parse the arguments and load configuration
     config = get_configs()
 
     testbed = Testbed(config)
-    testbed.train()
-    # testbed.test()
+    # testbed.train()
+    testbed.test()
 
 
 if __name__ == "__main__":

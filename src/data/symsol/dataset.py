@@ -234,8 +234,6 @@ class SymmetricSolidsDataset(Dataset):
     def get_equivalent(self, idx):
         return self.metadata[idx]["rotations_equivalent"]
 
-
-
 def load_symmetric_solids_dataset(split='train', transform=None, save=False):
     return SymmetricSolidsDataset(split=split, transform=transform, save=save)
 
@@ -249,10 +247,15 @@ def getDataLoader(dataset, batch_size, shuffle=True, num_workers=0):
         rotations = [item[1] for item in batch]  # Stack rotations
         rotations_equivalent = None
 
-        # Keep rotations_equivalent as a list for non-uniform sizes
+        # Ensure the first elements are tensors
+        assert isinstance(images[0], torch.Tensor), "The image must be a PyTorch tensor."
+        assert isinstance(rotations[0], torch.Tensor), "The rotation must be a PyTorch tensor."
+
+        # Let rotations_equivalent as a list for non-uniform sizes
         if batch[0][2] is not None:
             rotations_equivalent = [item[2] for item in batch]
         
+        # Stack images and rotations into batched tensors
         images = torch.stack(images)
         rotations = torch.stack(rotations)
 
@@ -273,12 +276,11 @@ def main():
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
     ])
-    # dataset = load_symmetric_solids_dataset(split='test', transform=None, save=False)
-    dataset = load_symmetric_solids_dataset(split=mode, transform=transform, save=False)
+    dataset = load_symmetric_solids_dataset(split='test', transform=transform, save=False)
+    # dataset = load_symmetric_solids_dataset(split=mode, transform=transform, save=False)
     print(f"Dataset has length {len(dataset)}")
 
     batch_size = 2
-    # train_loader = torch.utils.data.DataLoader(dataset, batch_size, shuffle=True, collate_fn=custom_collate_fn)
     train_loader = getDataLoader(dataset, batch_size, shuffle=True)
 
     # print(f"Dataset Info: {dataset.info}")
