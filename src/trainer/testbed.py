@@ -19,7 +19,6 @@ import csv
 from tqdm import tqdm
 import datetime
 import os
-from torch.amp import autocast, GradScaler
 import cv2 as cv
 
 class Testbed():
@@ -125,7 +124,7 @@ class Testbed():
         # model = self.model
 
         # Load weights
-        model = torch.load(".log/2024-12-03_16-21-07/model.pth", weights_only=False)
+        model = torch.load(".log/model_100000.pth", weights_only=False)
         model.eval()
 
         backbone = model.backbone
@@ -218,7 +217,7 @@ class Testbed():
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         # Load weights
-        model = torch.load(".log/2024-12-03_16-21-07/model.pth", weights_only=False)
+        model = torch.load(".log/model_100000.pth", weights_only=False)
         model.eval()
 
         backbone, head = model.backbone, model.head
@@ -264,6 +263,8 @@ class Testbed():
 
                     # get predicted rotations of current sample
                     predict_r_sample = np.array([predict_r[sample_idx + i * batch_size] for i in range(n_slices)])
+                    # Find the minimum angle from those equivalent answers
+                    print(f"Find the minimum angle of totally {len(rotations)} possible solutions.")
 
                     # [-0.5, 0.5] -> [0, 1]
                     img_rgb = img[sample_idx] + 0.5
