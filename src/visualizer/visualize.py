@@ -2,6 +2,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from theseus.geometry import SO3
+from matplotlib.colors import Normalize
+from ..metrics import so3 as lie_metrics
 
 def visualize_so3_probabilities(rotations,
                                 probabilities=None,
@@ -51,15 +53,25 @@ def visualize_so3_probabilities(rotations,
     if fig is None:
         fig = plt.figure(figsize=(8, 4), dpi=100)
         
-    ax = fig.add_subplot(111, projection='mollweide')
+    # ax = fig.add_subplot(111, projection='mollweide')
+    if ax is None:
+        ax = fig.add_subplot(111, projection='mollweide')  # Create once
+    ax.clear()  # Clear the plot without creating new instances
     ax.set_position([0.4, 0.1, 0.5, 0.75])
 
     n = len(rotations)
+    z_angles = lie_metrics.get_euler_angle(torch.tensor(rotations)).numpy()
+    norm = Normalize(vmin=-np.pi, vmax=np.pi)
+
+    canonical_rotation = np.float32([[0.9605305, -0.1947092,  0.1986693],
+        [0.2333919,  0.9526891, -0.1947092],
+        [-0.1513585,  0.2333919,  0.9605305]])
 
     display_rotations = rotations @ canonical_rotation
-    so3 = SO3(tensor = torch.tensor(display_rotations))
+    # so3 = SO3(tensor = torch.tensor(display_rotations))
     cmap = plt.cm.hsv
-    scatterpoint_scaling = 4e1
+    colors = cmap(norm(z_angles))
+    scatterpoint_scaling = 1
     # euler_angles = so3.to_euler(order='ZYX')
     # print(euler_angles.shape)
     # eulers_queries = tfg.euler.from_rotation_matrix(display_rotations)
@@ -67,7 +79,8 @@ def visualize_so3_probabilities(rotations,
     # tilt_angles = eulers_queries[:, 0]
 
     longitudes = np.arctan2(xyz[:, 0], -xyz[:, 1])
-    latitudes = np.arcsin(xyz[:, 2])
+    latitudes = np.arcsin(np.clip(xyz[:, 2], -1, 1))
+    # print(xyz[:, 2])
 
     probabilities = np.ones(n)
 
@@ -90,7 +103,8 @@ def visualize_so3_probabilities(rotations,
         longitudes[which_to_display],
         latitudes[which_to_display],
         s=scatterpoint_scaling,
-        c=cmap(0.5))
+        c=colors)
+        # c=cmap(0.5))
         # c=cmap(0.5 + tilt_angles[which_to_display] / 2. / np.pi))
 
     ax.grid()

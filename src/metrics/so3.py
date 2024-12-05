@@ -72,6 +72,11 @@ def as_repr(t, repr: str):
 def get_repr_size(repr: str):
     if repr == "tan":
         return 3
+    
+def get_euler_angle(t):
+    t = as_mat(t)
+    z_angle = torch.atan2(t[:,0,0], t[:,1,0])
+    return z_angle
 
 def chordal_distance(x1, x2):
     m1 = as_mat(x1)
