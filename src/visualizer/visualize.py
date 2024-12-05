@@ -53,7 +53,10 @@ def visualize_so3_probabilities(rotations,
     if fig is None:
         fig = plt.figure(figsize=(8, 4), dpi=100)
         
-    ax = fig.add_subplot(111, projection='mollweide')
+    # ax = fig.add_subplot(111, projection='mollweide')
+    if ax is None:
+        ax = fig.add_subplot(111, projection='mollweide')  # Create once
+    ax.clear()  # Clear the plot without creating new instances
     ax.set_position([0.4, 0.1, 0.5, 0.75])
 
     n = len(rotations)
@@ -77,7 +80,7 @@ def visualize_so3_probabilities(rotations,
 
     longitudes = np.arctan2(xyz[:, 0], -xyz[:, 1])
     latitudes = np.arcsin(np.clip(xyz[:, 2], -1, 1))
-    print(xyz[:, 2])
+    # print(xyz[:, 2])
 
     probabilities = np.ones(n)
 

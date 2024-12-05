@@ -20,6 +20,7 @@ from tqdm import tqdm
 import datetime
 import os
 import cv2 as cv
+import time
 
 class Testbed():
     def __init__(self, config):
@@ -296,9 +297,145 @@ class Testbed():
                     rt_idx += 1
 
 
+    def visualize_video(self):
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Resize((224, 224)),
+            transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
+        ])
 
+        # batch_size = self.a.batch_size
+        # test_dataset = dataset.load_symmetric_solids_dataset(split='test', transform=transform)
+        # test_loader = dataset.getDataLoader(test_dataset, batch_size = batch_size, shuffle=True, num_workers=10)
+        cap = cv.VideoCapture("cone.mp4")
+        if not cap.isOpened():
+            print("Error: Cannot open video.")
+            return
 
+        cur_time = np.linspace(self.noise_schedule.timesteps, 0, self.a.steps, endpoint = False) -1
+        cur_time = cur_time.astype(np.int32).tolist()
+        prev_time = cur_time[1:] + [0]
+        time_seq = list(zip(cur_time, prev_time))
 
+        # Check if CUDA is available and set the device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Load weights
+        model = torch.load(".log/model_100000.pth", weights_only=False)
+        model.eval()
+
+        backbone, head = model.backbone, model.head
+        backbone, head = backbone.to(device), head.to(device)
+
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6), gridspec_kw={'width_ratios': [1, 2]}, dpi=200)
+
+        # Remove axis ticks and labels
+        for spine in axs[1].spines.values():
+            spine.set_visible(False)
+        axs[1].set_xticks([])
+        axs[1].set_yticks([])
+        axs[1].set_xticklabels([])
+        axs[1].set_yticklabels([])
+        plt.show(block=False)
+
+        with torch.no_grad():
+            time_pose = []
+            n_slices = 500
+            id = 0
+
+            # for batch_idx, (img, _, rotations_equivalent) in enumerate(test_loader):
+            while cap.isOpened():
+                start_frame = time.time()
+                ret, frame  = cap.read()
+                if not ret:
+                    print("End of video.")
+                    break
+                img_rgb = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
+                img = transform(img_rgb).unsqueeze(0)
+        
+                batch = self.get_flat_batch_test(img, n_slices)
+                img = batch["img"].to(device)
+                rt = batch["rt"].to(device) #size(batch_size*n_slices, 3)
+                # print(img.size(), rt.size()) # [1, 3, 224, 224], # [500, 3]
+                end_preprocess = time.time()
+                print(f"Data Preprocessing time: {end_preprocess - start_frame:.6f} seconds")
+
+                # get features of image via backbone network
+                start_backbone = time.time()
+                features = backbone(img)
+                end_backbone = time.time()
+                print(f"Backbone Inference Time: {end_backbone - start_backbone:.6f} seconds")
+
+                # Denoised pose
+                start_loop = time.time()
+                for t, tp in time_seq:
+                    tt = torch.tensor(np.full([n_slices, 1], t, dtype = np.int32)).to(device) 
+                    mu = head(features, rt, tt)
+                    rt = self.p_sample_apply(mu, rt, t) #size(batch_size*n_slices, 3)
+                    time_pose.append(rt[0])
+                    # print(f"Time step: {t}, Pose: {rt[0]}")
+                
+                predict_r = lie_metrics.as_mat(rt).cpu().numpy()
+                end_loop = time.time()
+                print(f"Time_seq Loop Time: {end_loop - start_loop:.6f} seconds")
+                
+                # Show the imae on the left
+                # fig, axs = plt.subplots(1, 2, figsize=(12, 6), gridspec_kw={'width_ratios': [1, 2]}, dpi=200)
+
+                start_axs0 = time.time()
+                plt.clf()
+                # axs[0].clear()
+                axs[0].imshow(frame)
+                axs[0].axis('off')
+                axs[0].set_title("Image")
+                end_axs0 = time.time()
+                print(f"create axs 0 Time: {end_axs0 - start_axs0:.6f} seconds")
+                
+                # axs[1].clear()
+                fig, ax = visualize_so3_probabilities(predict_r, fig=fig)
+                axs[1].set_title("SO3 probability distribution")
+
+                end_axs1 = time.time()
+                print(f"create axs 1 Time: {end_axs1 - end_axs0:.6f} seconds")
+
+                fig.savefig(f"video_result/frame{id}.png")
+
+                id += 1
+
+                # plt.draw()
+                # plt.pause(0.001)  # Adjust for smoother playback
+
+                # fig, ax = visualize_so3_probabilities(predict_r, fig=None, ax=None)
+                # fig.savefig("frame.png")
+                # fig.canvas.draw()
+                # img_so3 = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+                # img_so3 = img_so3.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+
+                # # Resize SO3 probability image to match the height of the video frame
+                # height, width = frame.shape[:2]
+                # img_so3_resized = cv.resize(img_so3, (width, height))
+
+                # # Concatenate the video frame and SO3 image horizontally
+                # combined_image = np.hstack((frame, img_so3_resized))
+                # # Resize the combined image to make the window larger
+                # combined_image = cv.resize(combined_image, (int(combined_image.shape[1] * 3), 
+                #                                                 int(combined_image.shape[0] * 3)))
+
+                # # Display the combined image in one window
+                # cv.imshow("Video and SO3 Visualization", combined_image)
+
+                if cv.waitKey(30) & 0xFF == ord('q'):
+                    print("Exiting...")
+                    break
+                
+                end_frame = time.time()
+                print(f"Draw Time: {end_frame - end_axs1:.6f} seconds")
+                print(f"One Frame Inference Time: {end_frame - start_frame:.6f} seconds")
+
+        cap.release()
+        cv.destroyAllWindows()
+
+        print(id)
 
     # --- train ---
     def get_flat_batch_train(self, img, rot, n_slices):
