@@ -108,6 +108,9 @@ class SymmetricSolidsDataset(Dataset):
                     # Append metadata
                     self.metadata.append({"image_path": image_path, "label": label_matrix})
 
+                    if idx == 1000:
+                        break
+
             elif split == 'test':
                 self.tf_dataset, self.info = tfds.load("symmetric_solids", split="test", with_info=True, data_dir=self.data_dir, as_supervised=False)
                 # Iterate over dataset and save images/gt_label
@@ -126,6 +129,8 @@ class SymmetricSolidsDataset(Dataset):
                                             "rotation": rotation.tolist(), 
                                             "rotations_equivalent": rotations_equivalent.tolist()
                                             })
+                    if idx == 1000:
+                        break
 
     def saveData(self, split="train"):
         # Directory to save the dataset
@@ -191,8 +196,8 @@ class SymmetricSolidsDataset(Dataset):
                 print("Testing dataset saved successfully!")
 
     def __len__(self):
-        return len(self.metadata)
-        # return 100
+        # return len(self.metadata)
+        return 1000
     
     def __getitem__(self, idx):
         """

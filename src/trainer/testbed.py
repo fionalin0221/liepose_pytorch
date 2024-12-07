@@ -22,6 +22,26 @@ import os
 import cv2 as cv
 import time
 
+# from torch.multiprocessing import Pool, cpu_count, set_start_method
+import torch.multiprocessing as mp
+
+def process_head(head, time_seq, features, rt_chunks):
+    process_id = os.getpid()
+    # print(process_id, len(rt_chunks))
+    start = time.time()
+    with torch.no_grad():
+        chunk_size = len(rt_chunks)
+        for t, tp in time_seq:
+            tt_chunks = torch.tensor(np.full([chunk_size, 1], t, dtype = np.int32))
+
+            mu = head(features, rt_chunks, tt_chunks)
+            # rt_chunks = p_sample_apply(mu, rt_chunks, t) #size(batch_size*n_slices, 3)
+
+    end = time.time()
+    print(end - start)
+
+    return rt_chunks
+
 class Testbed():
     def __init__(self, config):
         """
@@ -112,9 +132,9 @@ class Testbed():
         ])
 
         test_dataset = dataset.load_symmetric_solids_dataset(split='test', transform=transform)
-        test_loader = dataset.getDataLoader(test_dataset, batch_size = self.a.batch_size, shuffle=True, num_workers=10)
+        test_loader = dataset.getDataLoader(test_dataset, batch_size = 1, shuffle=False, num_workers=0)
 
-        cur_time = np.linspace(self.noise_schedule.timesteps, 0, self.a.steps, endpoint = False) -1
+        cur_time = np.linspace(self.noise_schedule.timesteps, 0, int(self.a.steps/10), endpoint = False) -1
         cur_time = cur_time.astype(np.int32).tolist()
         prev_time = cur_time[1:] + [0]
         time_seq = list(zip(cur_time, prev_time))
@@ -123,23 +143,39 @@ class Testbed():
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {device}")
 
-        # model = self.model
-
         # Load weights
-        model = torch.load(".log/model_100000.pth", weights_only=False)
+        model = torch.load(".log/model_250000.pth", weights_only=False)
         model.eval()
 
-        backbone = model.backbone
-        head = model.head
-        backbone = backbone.to(device)
-        head = head.to(device)
+        backbone, head = model.backbone, model.head
+        backbone, head = backbone.to(device), head.to(device)
+
+
+        n_slices = 1
+        average_minimum_angle = 0
+        considered_shape = ["tetrahedron", "cube", "icosahedron", "cone", "cylinder", "marked tetrahedron", "marked cube", "marked icosahedron"]
+        total = 0
+
+        # picard iteration parameters
+        K = 30
+        T = 100
+        epsilon = 0.1
+
+        T_split = T
+        time = torch.linspace(0, T, T_split + 1, requires_grad=True)[:T_split]
+        # print(time)
+        alpha_start = torch.tensor(self.noise_schedule.alpha_start, requires_grad=True)
+        alpha_end = torch.tensor(self.noise_schedule.alpha_end, requires_grad=True)
+        base = (alpha_start ** (1/self.a.power) - alpha_end ** (1/self.a.power)) / (T-1)
+
+        alphas = (alpha_end ** (1/self.a.power) + time * base) ** self.a.power
+        square_alphas = alphas ** 0.5
+        alphas, square_alphas = alphas.to(device), square_alphas.to(device)
+
+        # gradients = torch.autograd.grad(outputs=alphas.sum(), inputs=time, create_graph=True)[0].to(device)
 
         with torch.no_grad():
-            time_pose = []
-            all_final_pose = []
-            n_slices = 1
-
-            for batch_idx, (img, rotation, rotations_equivalent) in enumerate(test_loader):
+            for batch_idx, (img, rotation, rotations_equivalent) in tqdm(enumerate(test_loader), total=len(test_loader)):
                 batch = self.get_flat_batch_test(img, n_slices)
                 img = batch["img"].to(device)
                 rt = batch["rt"].to(device) #size(batch_size*n_slices, 3)
@@ -147,27 +183,54 @@ class Testbed():
                 # get features of image via backbone network
                 features = backbone(img)
 
-                # Denoised pose
-                for t, tp in time_seq:
-                    tt = torch.tensor(np.full([self.a.batch_size * n_slices, 1], t, dtype = np.int32)).to(device) 
-                    mu = head(features, rt, tt)
-                    rt = self.p_sample_apply(mu, rt, t) #size(batch_size*n_slices, 3)
-                    time_pose.append(rt[0])
-                    print(f"Time step: {t}, Pose: {rt[0]}")
+                # # Denoised pose
+                # for t, tp in time_seq:
+                #     tt = torch.tensor(np.full([self.a.batch_size * n_slices, 1], t, dtype = np.int32)).to(device) 
+                #     mu = head(features, rt, tt)
+                #     rt = self.p_sample_apply(mu, rt, t) #size(batch_size*n_slices, 3)
+                #     time_pose.append(rt[0])
+                #     print(f"Time step: {t}, Pose: {rt[0]}")
 
-                # Iterate mini-batch
+                # picard iteration (parallelized)
+                s = torch.zeros(((T+1) * n_slices, 3, 3))
+                poses = lie_metrics.as_mat(LieDist._sample_unit(n=((T+1) * n_slices,)))
+
+                # Perform the loop over K iterations
+                for k in range(K):
+                    prefix_mul = torch.eye(3).unsqueeze(0).repeat((T + 1) * n_slices, 1, 1) # (T+1, 3, 3)
+                    s = torch.eye(3).unsqueeze(0).repeat((T + 1) * n_slices, 1, 1)  # (T+1, 3, 3)
+                    
+                    time_n_slices = time.repeat(n_slices).flip(0).to(device)
+
+                    # parallelized calculate s(x_t, t)
+                    mu = head(features, lie_metrics.as_tan(poses[:(T * n_slices)]).to(device), time_n_slices)
+
+                    # calculate f(x, t) for SDE
+                    square_alphas_n_slices = square_alphas.repeat(n_slices).unsqueeze(-1)
+                    s[:T * n_slices] = lie_metrics.as_mat(epsilon * mu * square_alphas_n_slices)
+                    for t in range(1, T+1):
+                        index1 = (t-1) * n_slices
+                        index2 = t * n_slices
+                        prefix_mul[index2:index2+n_slices] = torch.bmm(prefix_mul[index1:index1+n_slices], s[index1:index1+n_slices])
+
+                    # batch matrix multiplication
+                    poses = torch.bmm(poses[:n_slices].repeat(T + 1, 1, 1), prefix_mul)
+
+
+                # Evaluation: Calculate minimun angle
                 rt_idx = 0 # rt_idx is the index of rt, size [batch_size*n_slices, 3]
                 for sample_idx in range(len(img)):
                     # get ground-truth rotations of current sample
                     rotations = rotations_equivalent[sample_idx].cpu().numpy()
 
                     # get predicted rotations of current sample
-                    predict_r = lie_metrics.as_mat(rt[rt_idx].unsqueeze(dim=0)).cpu().numpy()[0]
+                    # predict_r = lie_metrics.as_mat(rt[rt_idx].unsqueeze(dim=0)).cpu().numpy()[0]
+                    predict_r = poses[-1]
 
                     # Find the minimum angle from those equivalent answers
                     min_angle = 1000000
                     min_rotations_idx = -1
-                    print(f"Find the minimum angle of totally {len(rotations)} possible solutions.")
+                    # print(f"Find the minimum angle of totally {len(rotations)} possible solutions.")
 
                     for rot_idx, rotation in enumerate(rotations):
                         # Compute the relative rotation matrix
@@ -183,22 +246,31 @@ class Testbed():
                             min_angle = angle
                             min_rotations_idx = rot_idx
 
+                    if len(rotations) != 1:
+                        average_minimum_angle += min_angle
+                        total += 1
+                        # print(f"Total {total} samples, the average minimum angle: {average_minimum_angle / total}")
+
                     # Update index of rt
                     rt_idx += 1
 
-                    print(f"Minimum angle: {min_angle}, \npredict: \n{predict_r}, \nmin-corresponding answer: \n{rotations[min_rotations_idx]}")
-                    break
+                    # print(f"Minimum angle: {min_angle}, \npredict: \n{predict_r}, \nmin-corresponding answer: \n{rotations[min_rotations_idx]}")
+                    # break
 
-                self.showImage(img)
+                # self.showImage(img)
 
-                # Wait for user input
-                key = cv.waitKey(0)
-                if key == ord('q'):
-                    print("Exiting...")
-                    break
-                elif key == ord(' '):
-                    print("Next image...")
-                    cv.destroyAllWindows()
+                # # Wait for user input
+                # key = cv.waitKey(0)
+                # if key == ord('q'):
+                #     print("Exiting...")
+                #     break
+                # elif key == ord(' '):
+                #     print("Next image...")
+                #     cv.destroyAllWindows()
+
+        average_minimum_angle = average_minimum_angle / total
+        print(f"Total {total} samples, the average minimum angle is {average_minimum_angle}")
+
 
     def visualize(self):
         transform = transforms.Compose([
@@ -299,14 +371,18 @@ class Testbed():
 
 
     def visualize_video(self):
-
+        # class InvertImage:
+        #     def __call__(self, img):
+        #         return 1 - img
+            
         transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Resize((224, 224)),
+            # InvertImage(),
             transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
         ])
 
-        cap = cv.VideoCapture("vis/cone.mp4")
+        cap = cv.VideoCapture("vis/ball_mark.mp4")
         if not cap.isOpened():
             print("Error: Cannot open video.")
             return
@@ -319,13 +395,23 @@ class Testbed():
 
         # Check if CUDA is available and set the device
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        device = 'cpu'
 
         # Load weights
         model = torch.load(".log/model_250000.pth", weights_only=False)
+
+        # model = torch.jit.script(model)
+
         model.eval()
+
+
 
         backbone, head = model.backbone, model.head
         backbone, head = backbone.to(device), head.to(device)
+        
+        # head = head.share_memory()
+        torch.set_num_threads(1)
+        # print(torch.get_num_threads())
         
         # figure initialization
         fig, axs = plt.subplots(1, 2, figsize=(12, 6), gridspec_kw={'width_ratios': [1, 2]}, dpi=200)
@@ -339,10 +425,16 @@ class Testbed():
         axs[1].set_yticklabels([])
         plt.show(block=False)
 
-        with torch.no_grad():
-            n_slices = 500
-            id = 0
+        # set_start_method('spawn', force=True)  # Needed for multiprocessing
+        n_slices = 500         
+        frame_id = 0
+        # n_cores = cpu_count()
+        n_cores = 14
+        print(f"Total CPU cores: {n_cores}")
+        mp.set_start_method('fork')
+        pool = mp.Pool(n_cores)
 
+        with torch.no_grad():
             while cap.isOpened():
                 start_frame = time.time()
 
@@ -360,22 +452,47 @@ class Testbed():
                 rt = batch["rt"].to(device) #size(batch_size*n_slices, 3)
 
                 end_preprocess = time.time()
+                print(f"----------------------------- {frame_id} -------------------------------")
                 print(f"Data Preprocessing time: {end_preprocess - start_frame:.6f} seconds")
 
                 # get features of image via backbone network
+                start_backbone = time.time()
                 features = backbone(img)
+                end_backbone = time.time()
+                print(f"Time backbone: {end_backbone - start_backbone:.6f} seconds")
 
                 # Denoised pose
                 start_loop = time.time()
-                for t, tp in time_seq:
-                    tt = torch.tensor(np.full([n_slices, 1], t, dtype = np.int32)).to(device) 
-                    mu = head(features, rt, tt)
-                    rt = self.p_sample_apply(mu, rt, t) #size(batch_size*n_slices, 3)
+                head_time = 0
+                sample_time = 0
+
+                # pool = mp.Pool(n_cores)
+                # with mp.Pool(n_cores) as pool:
+                rt_chunks = torch.chunk(rt, n_cores)
+                args = [(head, time_seq, features, rt_chunks[i],) for i in range(n_cores)]                
+                results = pool.starmap(process_head, args)
+                results = torch.cat(results, dim=0)
+
+                # pool.join()
+
+                # for t, tp in time_seq:
+                #     tt = torch.tensor(np.full([n_slices, 1], t, dtype = np.int32)).to(device) 
+                    
+                #     start_head = time.time()
+                #     mu = head(features, rt, tt)
+                #     end_head = time.time()
+                #     head_time += end_head - start_head
+
+                #     start_sample = time.time()
+                #     rt = self.p_sample_apply(mu, rt, t) #size(batch_size*n_slices, 3)
+                #     end_sample = time.time()
+                #     sample_time += end_sample - start_sample
 
                 # Convert the predicted rotations to SO3 matrix format
                 predict_r = lie_metrics.as_mat(rt).cpu().numpy()
                 end_loop = time.time()
-                print(f"Time_seq Loop Time: {end_loop - start_loop:.6f} seconds")
+                print(f"Time_seq Loop Time: {end_loop - start_loop:.6f} seconds, "
+                    f"(Time head: {head_time:.6f} seconds, Time sample: {sample_time:.6f} seconds)")
                 
 
                 plt.clf()
@@ -386,9 +503,8 @@ class Testbed():
                 fig, ax = visualize_so3_probabilities(predict_r, fig=fig)
                 axs[1].set_title("SO3 probability distribution")
 
-
-                fig.savefig(f"video_result/frame{id}.png", bbox_inches='tight', pad_inches=0.1)
-                id += 1
+                fig.savefig(f"vis/video_result/frame{frame_id}.png", bbox_inches='tight', pad_inches=0.1)
+                frame_id += 1
 
                 # plt.draw()
                 # plt.pause(0.001)  # Adjust for smoother playback
@@ -400,12 +516,10 @@ class Testbed():
                 end_frame = time.time()
                 print(f"Draw Time: {end_frame - end_loop:.6f} seconds")
                 print(f"One Frame Inference Time: {end_frame - start_frame:.6f} seconds")
-        
-        # Release video capture and close OpenCV windows
-        cap.release()
-        cv.destroyAllWindows()
-
-        print(id)
+    
+            # Release video capture and close OpenCV windows
+            cap.release()
+            cv.destroyAllWindows()
 
     # --- train ---
     def get_flat_batch_train(self, img, rot, n_slices):
@@ -492,6 +606,7 @@ class Testbed():
         print(f"Using device: {device}")
 
         # Prepare the model
+        # model = torch.jit.script(self.model)
         model = self.model.to(device)
         model.train()  # Set the model to training mode
 
@@ -598,3 +713,4 @@ class Testbed():
 
         # Save model
         torch.save(model, os.path.join(dir_path, "model.pth"))
+        # torch.jit.save(model, os.path.join(dir_path, "model.pth"))
