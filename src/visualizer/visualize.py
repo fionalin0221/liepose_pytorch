@@ -60,7 +60,7 @@ def visualize_so3_probabilities(rotations,
     ax.set_position([0.4, 0.1, 0.5, 0.75])
 
     n = len(rotations)
-    z_angles = lie_metrics.get_euler_angle(torch.tensor(rotations)).numpy()
+    z_angles = lie_metrics.get_euler_angle(rotations).numpy()
     norm = Normalize(vmin=-np.pi, vmax=np.pi)
 
     canonical_rotation = np.float32([[0.9605305, -0.1947092,  0.1986693],

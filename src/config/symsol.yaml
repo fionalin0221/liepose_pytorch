@@ -33,3 +33,9 @@ power: 3.0
 
 # opt
 steps: 100
+
+# picard iteration sampling
+picard:
+  iteration: 30
+  T_split: 100
+  epsilon: 0.1
