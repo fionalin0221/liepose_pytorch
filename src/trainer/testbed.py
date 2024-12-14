@@ -158,7 +158,7 @@ class Testbed():
             epsilon = 1e-7
             step_size = (epsilon * 0.5 * (sigma_t ** 2) / (sigma_L ** 2)).to(device)  #size(batch_size*n_slices, 1)
             noise = (LieDist._sample_unit(n=(size,))).to(device) #size(batch_size*n_slices, 3)
-            poses = torch.bmm(poses, lie_metrics.as_mat(step_size * mu / sigma_t.to(device) + torch.sqrt(2 * step_size) * noise))  #size(batch_size*n_slices, 3, 3)
+            poses = torch.bmm(poses, lie_metrics.as_mat(step_size * mu / sigma_t.to(device) + 0.1 * torch.sqrt(2 * step_size) * noise))  #size(batch_size*n_slices, 3, 3)
 
             # end_time = time.time()
             # total_sample_time += end_time - start_time
@@ -470,6 +470,9 @@ class Testbed():
         # mp.set_start_method('fork')
         # pool = mp.Pool(n_cores)
 
+        avg_loop_time = 0
+        avg_sample_time = 0
+
         with torch.no_grad():
             while cap.isOpened():
                 start_frame = time.time()
@@ -489,17 +492,17 @@ class Testbed():
                 # img = img.to(device)
 
                 end_preprocess = time.time()
-                print(f"----------------------------- {frame_id} -------------------------------")
-                print(f"Data Preprocessing time: {end_preprocess - start_frame:.6f} seconds")
+                # print(f"----------------------------- {frame_id} -------------------------------")
+                # print(f"Data Preprocessing time: {end_preprocess - start_frame:.6f} seconds")
 
                 # get features of image via backbone network
                 start_backbone = time.time()
                 features = backbone(img)
                 end_backbone = time.time()
-                print(f"Time backbone: {end_backbone - start_backbone:.6f} seconds")
+                # print(f"Time backbone: {end_backbone - start_backbone:.6f} seconds")
 
                 # Denoised pose
-                start_loop = time.time()
+                start_sampling = time.time()
                 head_time = 0
                 sample_time = 0
 
@@ -511,8 +514,11 @@ class Testbed():
                 # results = torch.cat(results, dim=0)
 
                 # pool.join()
-                poses = self.picardIterationSampling(head, features, n_slices)
+                # poses = self.picardIterationSampling(head, features, n_slices)
                 # print(poses.shape)
+
+                # # Denoised pose
+                poses = self.randomWalkSampling(head, features, n_slices)
 
                 # for t, tp in time_seq:
                 #     tt = torch.tensor(np.full([n_slices, 1], t, dtype = np.int32)).to(device) 
@@ -529,10 +535,13 @@ class Testbed():
                 # # Convert the predicted rotations to SO3 matrix format
                 # poses = lie_metrics.as_mat(rt).cpu()
 
-                end_loop = time.time()
-                print(f"Time_seq Loop Time: {end_loop - start_loop:.6f} seconds, "
-                    f"(Time head: {head_time:.6f} seconds, Time sample: {sample_time:.6f} seconds)")
+                end_sampling = time.time()
+                # print(f"Time_seq Loop Time: {end_sampling - start_sampling:.6f} seconds, ")
+                avg_loop_time += end_sampling - start_sampling
+                # print(f"Time_seq Loop Time: {end_loop - start_loop:.6f} seconds, "
+                #     f"(Time head: {head_time:.6f} seconds, Time sample: {sample_time:.6f} seconds)")
                 
+
 
                 plt.clf()
                 axs[0].imshow(frame)
@@ -553,12 +562,17 @@ class Testbed():
                     break
                 
                 end_frame = time.time()
-                print(f"Draw Time: {end_frame - end_loop:.6f} seconds")
-                print(f"One Frame Inference Time: {end_frame - start_frame:.6f} seconds")
+                # print(f"Draw Time: {end_frame - end_loop:.6f} seconds")
+                # print(f"One Frame Inference Time: {end_frame - start_frame:.6f} seconds")
+                avg_sample_time += end_frame-start_frame
+
+                if frame_id % 20 == 0:
+                    print(f"Avg Inference Time: {avg_sample_time / frame_id}, Avg Loop Time: {avg_loop_time / frame_id}")
     
             # Release video capture and close OpenCV windows
             cap.release()
             cv.destroyAllWindows()
+            print(f"Avg Inference Time: {avg_sample_time / frame_id}, Avg Loop Time: {avg_loop_time / frame_id}")
 
     # --- train ---
     def get_flat_batch_train(self, img, rot, n_slices):
