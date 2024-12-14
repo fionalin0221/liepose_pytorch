@@ -38,4 +38,4 @@ steps: 100
 picard:
   iteration: 30
   T_split: 100
-  epsilon: 0.1
+  epsilon: 2.0
