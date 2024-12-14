@@ -25,18 +25,8 @@ import time
 # from torch.multiprocessing import Pool, cpu_count, set_start_method
 import torch.multiprocessing as mp
 
-# import sys
-# from PyQt5.QtCore import QLoggingCategory  # or PySide2/PySide6.QtCore
-
-# # Suppress QObject warnings
-# QLoggingCategory.setFilterRules("qt.qobject.warning=false")
-
-# # Suppress plugin loader messages
-# os.environ["QT_LOGGING_RULES"] = "*.debug=false;qt.qpa.plugin=false"
-
-# # Redirect standard output
-# sys.stdout = open(os.devnull, "w")
-# sys.stderr = open(os.devnull, "w")
+# Set print options to show all elements
+torch.set_printoptions(threshold=torch.inf)
 
 def process_head(head, time_seq, features, rt_chunks):
     process_id = os.getpid()
@@ -198,43 +188,44 @@ class Testbed():
         device = next(head.parameters()).device
         size = features.shape[0] * n_slices
         T = self.a.steps
-        time = torch.linspace(0, T-1, T)
+        T_split  = 5
+        time = torch.linspace(0, T-1, T_split)
         time_n_slices = time.repeat_interleave(size).flip(0).to(device)
 
-        sqrt_alphas = torch.tensor(self.noise_schedule.sqrt_alphas, device=device).flip(0)[1:]
+        sqrt_alphas = torch.tensor(self.noise_schedule.sqrt_alphas[time.long()], device=device).flip(0)
         sqrt_alphas_n_slices = sqrt_alphas.repeat_interleave(size).unsqueeze(-1)
-        poses = lie_metrics.as_mat(LieDist._sample_unit(n=((T+1) * size,)))
+        poses = lie_metrics.as_mat(LieDist._sample_unit(n = ((T_split + 1) * size,)))
 
 
         with torch.no_grad():
             # Perform the loop over K iterations
             for k in range(self.a.picard.iteration):
                 # Initialize prefix-mul and s (result of head)
-                prefix_mul = torch.eye(3).unsqueeze(0).repeat((T + 1) * size, 1, 1) # (T+1, 3, 3)
-                s = torch.eye(3).unsqueeze(0).repeat((T + 1) * size, 1, 1)  # (T+1, 3, 3)
+                prefix_mul = torch.eye(3).unsqueeze(0).repeat((T_split + 1) * size, 1, 1) # (T+1, 3, 3)
+                s = torch.eye(3).unsqueeze(0).repeat((T_split + 1) * size, 1, 1)  # (T+1, 3, 3)
                 
                 # parallelized calculate s(x_t, t)
-                mu = head(features, lie_metrics.as_tan(poses[:(T * size)]).to(device), time_n_slices)
+                mu = head(features, lie_metrics.as_tan(poses[:(T_split * size)]).to(device), time_n_slices)
 
                 # calculate f(x, t) for SDE
 
-                s[:T * size] = lie_metrics.as_mat(self.a.picard.epsilon * mu * sqrt_alphas_n_slices)
-                for t in range(1, T+1):
+                s[:T_split * size] = lie_metrics.as_mat(self.a.picard.epsilon * mu * sqrt_alphas_n_slices)
+                for t in range(1, T_split + 1):
                     index1 = (t-1) * size
                     index2 = t * size
                     prefix_mul[index2:index2+size] = torch.bmm(prefix_mul[index1:index1+size], s[index1:index1+size])
 
                 # batch matrix multiplication
-                poses = torch.bmm(poses[:size].repeat(T + 1, 1, 1), prefix_mul)
+                poses = torch.bmm(poses[:size].repeat(T_split + 1, 1, 1), prefix_mul)
 
-        return poses[(T * size):].cpu()
+        return poses[(T_split * size):].cpu()
 
     def test(self):
         transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
         ])
-        batch_size = 512
+        batch_size = 1
 
         test_dataset = dataset.load_symmetric_solids_dataset(split='test', transform=transform)
         test_loader = dataset.getDataLoader(test_dataset, batch_size = batch_size, shuffle=False, num_workers=0)
@@ -314,12 +305,13 @@ class Testbed():
                         average_minimum_angle += min_angle
                         total += 1
                         # tqdm.write(f"{min_angle}")
-                        tqdm.write(f"Total {total} samples, the average minimum angle: {average_minimum_angle / total}")
+                        if total % 50 == 0:
+                            tqdm.write(f"Total {total} samples, the average minimum angle: {average_minimum_angle / total}")
 
                     # Update index of rt
                     rt_idx += 1
 
-                    print(f"Minimum angle: {min_angle}, \npredict: \n{predict_r}, \nmin-corresponding answer: \n{rotations[min_rotations_idx]}")
+                    # print(f"Minimum angle: {min_angle}, \npredict: \n{predict_r}, \nmin-corresponding answer: \n{rotations[min_rotations_idx]}")
                     # break
 
                 # self.showImage(img)
