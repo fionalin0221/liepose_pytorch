@@ -143,13 +143,13 @@ class Testbed():
 
     def randomWalkSampling(self, head, features, n_slices=1):
         device = next(head.parameters()).device
-        steps = self.a.steps
+        # steps = self.a.steps
+        steps = 10
         batch_size = features.shape[0]
-        time_arr = np.linspace(self.noise_schedule.timesteps, 0, int(steps), endpoint = False) -1
+
+        time_arr = np.linspace(self.noise_schedule.timesteps-1, 0, int(steps))
         poses = lie_metrics.as_mat(LieDist._sample_unit(n=(batch_size * n_slices,)).to(device))
 
-        total_head_time = 0
-        total_sample_time = 0
         for t in time_arr:
             tt = torch.tensor(np.full([batch_size * n_slices, 1], t, dtype = np.int32)).to(device)
             # start_time = time.time()
@@ -168,10 +168,10 @@ class Testbed():
             sigma_t = torch.tensor(sigma_t).unsqueeze(dim = 1)  #size(batch_size*n_slices, 1)
             sigma_L = torch.tensor(sigma_L).unsqueeze(dim = 1)  #size(batch_size*n_slices, 1)            
 
-            epsilon = 1e-8
+            epsilon = 2e-8
             step_size = (epsilon * 0.5 * (sigma_t ** 2) / (sigma_L ** 2)).to(device)  #size(batch_size*n_slices, 1)
             noise = (LieDist._sample_unit(n=(size,))).to(device) #size(batch_size*n_slices, 3)
-            poses = torch.bmm(poses, lie_metrics.as_mat(step_size * mu / sigma_t.to(device) + 0.1 * torch.sqrt(2 * step_size) * noise))  #size(batch_size*n_slices, 3, 3)
+            poses = torch.bmm(poses, lie_metrics.as_mat(step_size * mu / sigma_t.to(device) + 0.01 * torch.sqrt(2 * step_size) * noise))  #size(batch_size*n_slices, 3, 3)
 
             # end_time = time.time()
             # total_sample_time += end_time - start_time
@@ -297,10 +297,7 @@ class Testbed():
                         
                         # Calculate the trace
                         trace_R_rel = np.trace(R_rel)
-                        if trace_R_rel > 3:
-                            trace_R_rel = 3
-                        elif trace_R_rel < -1:
-                            trace_R_rel = -1
+                        trace_R_rel = max(min(trace_R_rel, 3), -1)
 
                         
                         # Compute the angular distance (in radians)
@@ -466,7 +463,6 @@ class Testbed():
 
         # Load weights
         model = torch.load(".log/model_250000.pth", weights_only=False)
-        # model = torch.jit.script(model)
         model.eval()
 
         backbone, head = model.backbone, model.head
@@ -509,7 +505,8 @@ class Testbed():
                 if not ret:
                     print("End of video.")
                     break
-
+                
+                # Step 1: Pre-processing
                 img_rgb = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
                 img = transform(img_rgb).unsqueeze(0)
                 
@@ -519,19 +516,17 @@ class Testbed():
                 # img = img.to(device)
 
                 end_preprocess = time.time()
-                # print(f"----------------------------- {frame_id} -------------------------------")
+                print(f"----------------------------- {frame_id} -------------------------------")
                 # print(f"Data Preprocessing time: {end_preprocess - start_frame:.6f} seconds")
 
-                # get features of image via backbone network
+                # Step 2: Backbone: get features of image via backbone network
                 start_backbone = time.time()
                 features = backbone(img)
                 end_backbone = time.time()
-                # print(f"Time backbone: {end_backbone - start_backbone:.6f} seconds")
+                print(f"Time backbone: {end_backbone - start_backbone:.6f} seconds")
 
-                # Denoised pose
+                # Step 3: Denoised pose (sampling)
                 start_sampling = time.time()
-                head_time = 0
-                sample_time = 0
 
                 # pool = mp.Pool(n_cores)
                 # with mp.Pool(n_cores) as pool:
@@ -547,28 +542,14 @@ class Testbed():
                 # # Denoised pose
                 poses = self.randomWalkSampling(head, features, n_slices)
 
-                # for t, tp in time_seq:
-                #     tt = torch.tensor(np.full([n_slices, 1], t, dtype = np.int32)).to(device) 
-                    
-                #     start_head = time.time()
-                #     mu = head(features, rt, tt)
-                #     end_head = time.time()
-                #     head_time += end_head - start_head
-
-                #     start_sample = time.time()
-                #     rt = self.p_sample_apply(mu, rt, t) #size(batch_size*n_slices, 3)
-                #     end_sample = time.time()
-                #     sample_time += end_sample - start_sample
-                # # Convert the predicted rotations to SO3 matrix format
-                # poses = lie_metrics.as_mat(rt).cpu()
-
                 end_sampling = time.time()
-                # print(f"Time_seq Loop Time: {end_sampling - start_sampling:.6f} seconds, ")
-                avg_loop_time += end_sampling - start_sampling
+                print(f"Sampling Time: {end_sampling - start_sampling:.6f} seconds, ")
+
                 # print(f"Time_seq Loop Time: {end_loop - start_loop:.6f} seconds, "
                 #     f"(Time head: {head_time:.6f} seconds, Time sample: {sample_time:.6f} seconds)")
-                
 
+                # Step 4: Visualization, draw image
+                start_draw = time.time()
 
                 plt.clf()
                 axs[0].imshow(frame)
@@ -579,18 +560,19 @@ class Testbed():
                 axs[1].set_title("SO3 probability distribution")
 
                 fig.savefig(f"vis/video_result/frame{frame_id}.png", bbox_inches='tight', pad_inches=0.1)
-                frame_id += 1
 
-                # plt.draw()
-                # plt.pause(0.001)  # Adjust for smoother playback
+                frame_id += 1
+                end_draw = time.time()
+
+                print(f"Draw Time: {end_draw - start_draw:.6f} seconds")
 
                 if cv.waitKey(30) & 0xFF == ord('q'):
                     print("Exiting...")
                     break
                 
                 end_frame = time.time()
-                # print(f"Draw Time: {end_frame - end_loop:.6f} seconds")
-                # print(f"One Frame Inference Time: {end_frame - start_frame:.6f} seconds")
+  
+                print(f"One Frame Inference Time: {end_frame - start_frame:.6f} seconds")
                 avg_sample_time += end_frame-start_frame
 
                 if frame_id % 20 == 0:
