@@ -130,6 +130,9 @@ class Head(nn.Module):
                 FourierMlpBlock(256, 512, 256),  # image-condition
                 FourierMlpBlock(256, 256, 256)   # time-condition
             ]))
+        
+        # self.mlpBlock_image = FourierMlpBlock(256, 512, 256)
+        # self.mlpBlock_time = FourierMlpBlock(256, 256, 256)
 
         self.linear = nn.Linear(256, self.out_dim)
 
@@ -153,7 +156,8 @@ class Head(nn.Module):
         Returns:
         model output: shape (batch * n_slices, 3) 
         """
-        img_feat = self.broadcast_batch(img_feat, rt.shape[0])
+        bs = torch.tensor(rt.shape[0])
+        img_feat = self.broadcast_batch(img_feat, bs)
 
         t = t.float()
         t = self.posEmbedT(t)
@@ -161,6 +165,7 @@ class Head(nn.Module):
 
         for blockImg, blockT in self.mlpBlocks:
             x = blockT(blockImg(x, img_feat), t)
+        # x = self.mlpBlock_time(self.mlpBlock_image(x, img_feat), t)
 
         x = self.linear(F.leaky_relu(x))
 
