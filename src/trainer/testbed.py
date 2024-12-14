@@ -25,6 +25,19 @@ import time
 # from torch.multiprocessing import Pool, cpu_count, set_start_method
 import torch.multiprocessing as mp
 
+# import sys
+# from PyQt5.QtCore import QLoggingCategory  # or PySide2/PySide6.QtCore
+
+# # Suppress QObject warnings
+# QLoggingCategory.setFilterRules("qt.qobject.warning=false")
+
+# # Suppress plugin loader messages
+# os.environ["QT_LOGGING_RULES"] = "*.debug=false;qt.qpa.plugin=false"
+
+# # Redirect standard output
+# sys.stdout = open(os.devnull, "w")
+# sys.stderr = open(os.devnull, "w")
+
 def process_head(head, time_seq, features, rt_chunks):
     process_id = os.getpid()
     # print(process_id, len(rt_chunks))
@@ -131,7 +144,7 @@ class Testbed():
     def randomWalkSampling(self, head, features, n_slices=1):
         device = next(head.parameters()).device
         steps = self.a.steps
-        batch_size = 1
+        batch_size = features.shape[0]
         time_arr = np.linspace(self.noise_schedule.timesteps, 0, int(steps), endpoint = False) -1
         poses = lie_metrics.as_mat(LieDist._sample_unit(n=(batch_size * n_slices,)).to(device))
 
@@ -155,7 +168,7 @@ class Testbed():
             sigma_t = torch.tensor(sigma_t).unsqueeze(dim = 1)  #size(batch_size*n_slices, 1)
             sigma_L = torch.tensor(sigma_L).unsqueeze(dim = 1)  #size(batch_size*n_slices, 1)            
 
-            epsilon = 1e-7
+            epsilon = 1e-8
             step_size = (epsilon * 0.5 * (sigma_t ** 2) / (sigma_L ** 2)).to(device)  #size(batch_size*n_slices, 1)
             noise = (LieDist._sample_unit(n=(size,))).to(device) #size(batch_size*n_slices, 3)
             poses = torch.bmm(poses, lie_metrics.as_mat(step_size * mu / sigma_t.to(device) + 0.1 * torch.sqrt(2 * step_size) * noise))  #size(batch_size*n_slices, 3, 3)
@@ -183,51 +196,48 @@ class Testbed():
         # gradients = torch.autograd.grad(outputs=alphas.sum(), inputs=time, create_graph=True)[0].to(device)
         # n_slices = 1
         device = next(head.parameters()).device
+        size = features.shape[0] * n_slices
         T = self.a.steps
         time = torch.linspace(0, T-1, T)
-        time_n_slices = time.repeat_interleave(n_slices).flip(0).to(device)
+        time_n_slices = time.repeat_interleave(size).flip(0).to(device)
 
         sqrt_alphas = torch.tensor(self.noise_schedule.sqrt_alphas, device=device).flip(0)[1:]
-        sqrt_alphas_n_slices = sqrt_alphas.repeat_interleave(n_slices).unsqueeze(-1)
-        poses = lie_metrics.as_mat(LieDist._sample_unit(n=((T+1) * n_slices,)))
+        sqrt_alphas_n_slices = sqrt_alphas.repeat_interleave(size).unsqueeze(-1)
+        poses = lie_metrics.as_mat(LieDist._sample_unit(n=((T+1) * size,)))
 
 
         with torch.no_grad():
             # Perform the loop over K iterations
             for k in range(self.a.picard.iteration):
                 # Initialize prefix-mul and s (result of head)
-                prefix_mul = torch.eye(3).unsqueeze(0).repeat((T + 1) * n_slices, 1, 1) # (T+1, 3, 3)
-                s = torch.eye(3).unsqueeze(0).repeat((T + 1) * n_slices, 1, 1)  # (T+1, 3, 3)
+                prefix_mul = torch.eye(3).unsqueeze(0).repeat((T + 1) * size, 1, 1) # (T+1, 3, 3)
+                s = torch.eye(3).unsqueeze(0).repeat((T + 1) * size, 1, 1)  # (T+1, 3, 3)
                 
                 # parallelized calculate s(x_t, t)
-                mu = head(features, lie_metrics.as_tan(poses[:(T * n_slices)]).to(device), time_n_slices)
+                mu = head(features, lie_metrics.as_tan(poses[:(T * size)]).to(device), time_n_slices)
 
                 # calculate f(x, t) for SDE
 
-                s[:T * n_slices] = lie_metrics.as_mat(self.a.picard.epsilon * mu * sqrt_alphas_n_slices)
+                s[:T * size] = lie_metrics.as_mat(self.a.picard.epsilon * mu * sqrt_alphas_n_slices)
                 for t in range(1, T+1):
-                    index1 = (t-1) * n_slices
-                    index2 = t * n_slices
-                    prefix_mul[index2:index2+n_slices] = torch.bmm(prefix_mul[index1:index1+n_slices], s[index1:index1+n_slices])
+                    index1 = (t-1) * size
+                    index2 = t * size
+                    prefix_mul[index2:index2+size] = torch.bmm(prefix_mul[index1:index1+size], s[index1:index1+size])
 
                 # batch matrix multiplication
-                poses = torch.bmm(poses[:n_slices].repeat(T + 1, 1, 1), prefix_mul)
+                poses = torch.bmm(poses[:size].repeat(T + 1, 1, 1), prefix_mul)
 
-        return poses[(T * n_slices):].cpu()
+        return poses[(T * size):].cpu()
 
     def test(self):
         transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
         ])
+        batch_size = 512
 
         test_dataset = dataset.load_symmetric_solids_dataset(split='test', transform=transform)
-        test_loader = dataset.getDataLoader(test_dataset, batch_size = 1, shuffle=False, num_workers=0)
-
-        # cur_time = np.linspace(self.noise_schedule.timesteps, 0, int(self.a.steps/10), endpoint = False) -1
-        # cur_time = cur_time.astype(np.int32).tolist()
-        # prev_time = cur_time[1:] + [0]
-        # time_seq = list(zip(cur_time, prev_time))
+        test_loader = dataset.getDataLoader(test_dataset, batch_size = batch_size, shuffle=False, num_workers=0)
 
         # Check if CUDA is available and set the device
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -243,19 +253,23 @@ class Testbed():
         n_slices = 1
         average_minimum_angle = 0
         considered_shape = ["tetrahedron", "cube", "icosahedron", "cone", "cylinder", "marked tetrahedron", "marked cube", "marked icosahedron"]
+        shape_count = [0 for _ in range(8)]
+        average_minimum_angle_each_shape = [0 for _ in range(8)]
         total = 0
 
         with torch.no_grad():
             for batch_idx, (img, rotation, rotations_equivalent) in tqdm(enumerate(test_loader), total=len(test_loader)):
-                # batch = self.get_flat_batch_test(img, n_slices)
-                # img = batch["img"].to(device)
-                # rt = batch["rt"].to(device) #size(batch_size*n_slices, 3)
+                label_shapes = []
+                for idx in range(batch_size*batch_idx, batch_size*batch_idx+len(img)):
+                    label_shapes.append(test_dataset.get_label(idx))
+                    shape_count[test_dataset.get_label(idx)] += 1
+
                 img = img.to(device)
 
                 # get features of image via backbone network
                 features = backbone(img)
 
-                # # Denoised pose
+                # Denoised pose
                 # poses = self.randomWalkSampling(head, features, n_slices)
 
                 # picard iteration (parallelized)
@@ -269,12 +283,13 @@ class Testbed():
 
                     # get predicted rotations of current sample
                     # predict_r = lie_metrics.as_mat(rt[rt_idx].unsqueeze(dim=0)).cpu().numpy()[0]
-                    predict_r = poses[-1]
+                    predict_r = poses[sample_idx]
 
                     # Find the minimum angle from those equivalent answers
                     min_angle = 1000000
                     min_rotations_idx = -1
                     # print(f"Find the minimum angle of totally {len(rotations)} possible solutions.")
+                    angles = []
 
                     for rot_idx, rotation in enumerate(rotations):
                         # Compute the relative rotation matrix
@@ -282,13 +297,21 @@ class Testbed():
                         
                         # Calculate the trace
                         trace_R_rel = np.trace(R_rel)
+                        if trace_R_rel > 3:
+                            trace_R_rel = 3
+                        elif trace_R_rel < -1:
+                            trace_R_rel = -1
+
                         
                         # Compute the angular distance (in radians)
                         angle = np.degrees(np.arccos((trace_R_rel - 1) / 2))
+                        angles.append(angle)
                         
                         if angle < min_angle:
                             min_angle = angle
                             min_rotations_idx = rot_idx
+
+                    average_minimum_angle_each_shape[label_shapes[sample_idx]] += min_angle
 
                     if len(rotations) != 1:
                         average_minimum_angle += min_angle
@@ -299,12 +322,12 @@ class Testbed():
                     # Update index of rt
                     rt_idx += 1
 
-                #     print(f"Minimum angle: {min_angle}, \npredict: \n{predict_r}, \nmin-corresponding answer: \n{rotations[min_rotations_idx]}")
-                #     # break
+                    print(f"Minimum angle: {min_angle}, \npredict: \n{predict_r}, \nmin-corresponding answer: \n{rotations[min_rotations_idx]}")
+                    # break
 
                 # self.showImage(img)
 
-                # # Wait for user input
+                # Wait for user input
                 # key = cv.waitKey(0)
                 # if key == ord('q'):
                 #     print("Exiting...")
@@ -315,6 +338,10 @@ class Testbed():
 
         average_minimum_angle = average_minimum_angle / total
         print(f"Total {total} samples, the average minimum angle is {average_minimum_angle}")
+
+        for i in range(len(considered_shape)):
+            average_minimum_angle_each_shape[i] = average_minimum_angle_each_shape[i]/shape_count[i]
+            print(f"{considered_shape[i]}: Total {shape_count[i]} samples, the average minimum angle is {average_minimum_angle_each_shape[i]}")
 
 
     def visualize(self):

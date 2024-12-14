@@ -10,3 +10,7 @@ frame.png
 tetra_mark.mp4
 images
 vis
+output_video.mp4
+requirements.txt
+test.py
+install.sh
