@@ -5,6 +5,29 @@ from theseus.geometry import SO3
 from matplotlib.colors import Normalize
 from ..metrics import so3 as lie_metrics
 
+def init_fig():
+    # figure initialization
+    fig, axs = plt.subplots(1, 2, figsize=(12, 6), gridspec_kw={'width_ratios': [1, 2]}, dpi=200)
+    axs[0].set_xticklabels([])
+    axs[0].set_yticklabels([])
+    axs[0].axis('off')
+    axs[0].set_title("Image")
+    axs[1].set_xticklabels([])
+    axs[1].set_yticklabels([])
+    axs[1].axis('off')
+    axs[1] = fig.add_subplot(122, projection='mollweide')  # Create once
+    
+    return fig, axs
+
+def show_frame(frame, ax):
+    ax.clear()
+    ax.imshow(frame)
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+    ax.axis('off')
+    ax.set_title("Image")
+    return ax
+
 def visualize_so3_probabilities(rotations,
                                 probabilities=None,
                                 rotations_gt=None,
@@ -50,12 +73,13 @@ def visualize_so3_probabilities(rotations,
     #             marker=marker,
     #             linewidth=4)
 
-    if fig is None:
-        fig = plt.figure(figsize=(8, 4), dpi=100)
+    # if fig is None:
+    #     fig = plt.figure(figsize=(8, 4), dpi=100)
         
-    # ax = fig.add_subplot(111, projection='mollweide')
-    if ax is None:
-        ax = fig.add_subplot(111, projection='mollweide')  # Create once
+    # # ax = fig.add_subplot(111, projection='mollweide')
+    # if ax is None:
+    #     ax = fig.add_subplot(111, projection='mollweide')  # Create once
+
     ax.clear()  # Clear the plot without creating new instances
     ax.set_position([0.4, 0.1, 0.5, 0.75])
 
@@ -110,5 +134,6 @@ def visualize_so3_probabilities(rotations,
     ax.grid()
     ax.set_xticklabels([])
     ax.set_yticklabels([])
+    ax.set_title("SO3 probability distribution")
 
     return fig, ax

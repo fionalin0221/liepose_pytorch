@@ -1,1 +1,1 @@
-from .visualize import visualize_so3_probabilities
+from .visualize import *

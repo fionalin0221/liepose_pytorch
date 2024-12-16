@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from .base import BaseVENoiseSchedule
 
 
@@ -24,3 +25,13 @@ class PowerNoiseSchedule(BaseVENoiseSchedule):
             )
             ** self.power
         )
+    
+    def get_gradient(self, timesteps):
+        time_arr = torch.linspace(0, timesteps, timesteps + 1, requires_grad=True)[:timesteps]
+        alpha_start = torch.tensor(self.alpha_start, requires_grad=True)
+        alpha_end = torch.tensor(self.alpha_end, requires_grad=True)
+        base = (alpha_start ** (1/self.power) - alpha_end ** (1/self.power)) / (timesteps-1)
+
+        alphas = (alpha_end ** (1/self.power) + time_arr * base) ** self.power
+        gradients = -torch.autograd.grad(outputs=alphas.sum(), inputs=time_arr, create_graph=True)[0]
+        return gradients
