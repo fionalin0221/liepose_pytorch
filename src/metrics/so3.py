@@ -11,6 +11,15 @@ def is_tan(t):
         return False
   
 def is_mat(t):
+
+    if t.shape == (3, 3):
+        identity = torch.eye(3, dtype=t.dtype, device=t.device)
+        is_orthogonal = torch.allclose(t.T @ t, identity, atol=1e-6)
+        if is_orthogonal:
+            return True
+        else:
+            return False
+
     if isinstance(t, Tensor) and t.shape[-2:] == (3, 3):
         return True
     else:

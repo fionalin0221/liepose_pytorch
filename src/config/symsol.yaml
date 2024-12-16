@@ -36,6 +36,10 @@ steps: 100
 
 # picard iteration sampling
 picard:
+  real_drift: False
   iteration: 30
   T_split: 100
-  epsilon: 2.0
+  epsilon: 0.05
+  threshold: 1  # degree
+  threshold_tau: 30
+  sliding_window: 10
