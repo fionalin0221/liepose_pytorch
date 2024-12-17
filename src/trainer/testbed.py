@@ -116,7 +116,7 @@ class Testbed():
     def randomWalkSampling(self, head, features, n_slices=1):
         device = next(head.parameters()).device
         # steps = self.a.steps
-        steps = 10
+        steps = 100
         batch_size = features.shape[0]
 
         time_arr = np.linspace(self.noise_schedule.timesteps-1, 0, int(steps))
@@ -202,7 +202,8 @@ class Testbed():
         # expand time_arr & sqrt_qlphas in batch (multiple image or multiple sample/image)
 
         if self.a.picard.real_drift == True:
-            coeff = self.noise_schedule.get_gradient(T).to(device)
+            coeff = self.noise_schedule.get_gradient(T).to(device).flip(0)[time_arr]
+            # print(coeff)
         else:
             coeff = torch.tensor(self.noise_schedule.sqrt_alphas[time_arr], device=device)
         
@@ -227,7 +228,7 @@ class Testbed():
 
         with torch.no_grad():
             # poses[t] is okay for this iteration, update poses[t+1~t+p]
-            while t < T_split - 1:
+            while t < T_split:
                 # Initialize prefix-mul
                 prefix_mul = torch.eye(3).unsqueeze(0).repeat((p+1) * size, 1, 1).to(device) # (T+1, 3, 3)
 
@@ -245,14 +246,14 @@ class Testbed():
                 poses_new = torch.bmm(poses[t*size:(t+1)*size].repeat(p+1, 1, 1), prefix_mul)
 
                 # Calculate error for each timestep
-                batch_trace = torch.bmm(torch.linalg.inv(poses_new[1*size:(p+1)*size]), poses[(t+1)*size:(t+p+1)*size]).diagonal(dim1=-2, dim2=-1).sum(dim=-1)
+                batch_trace = torch.bmm(torch.linalg.inv(poses_new[1*size:(p)*size]), poses[(t+1)*size:(t+p)*size]).diagonal(dim1=-2, dim2=-1).sum(dim=-1)
                 error = torch.rad2deg(torch.acos(torch.clamp((batch_trace - 1) / 2, min=-1.0, max=1.0)))
                 threshold = coeff[t] * tau
 
                 valid_indices = (error > threshold).nonzero(as_tuple=True)[0]
 
                 # stride ← min {j : error[j] > τ 2σ^2[j]} ∪ {p} 
-                stride = valid_indices.min().item() // size if valid_indices.numel() > 0 else p
+                stride = (valid_indices.min().item() // size) + 1 if valid_indices.numel() > 0 else p
 
                 # Updata k+1 poses
                 poses[(t+1)*size:(t+p+1)*size] = poses_new[1*size:]
@@ -264,8 +265,7 @@ class Testbed():
                 else:
                     poses[(t+p+1)*size:(t+p+stride+1)*size] = poses[(t+p)*size:(t+p+1)*size].repeat(stride, 1, 1)
 
-                if t == 99:
-                    print(f"t: {t}, threshold: {threshold}, stride: {stride}", error)
+                # if t == 99:
 
                 t += stride
                 p = min(p, T_split - t)
@@ -278,7 +278,7 @@ class Testbed():
 
     def test(self):
         transform = self.transform
-        batch_size = 96
+        batch_size = 1
 
         test_dataset = dataset.load_symmetric_solids_dataset(split='test', transform=transform)
         test_loader = dataset.getDataLoader(test_dataset, batch_size = batch_size, shuffle=False, num_workers=0)
@@ -318,8 +318,9 @@ class Testbed():
 
             # Step 2: Denoised pose (sampling)
             # poses = self.randomWalkSampling(head, features, n_slices)
-            poses = self.picardIterationSampling(head, features, n_slices)
-            # poses, iteration = self.picardIterationSamplingWindow(head, features, n_slices)
+            # poses = self.picardIterationSampling(head, features, n_slices)
+            poses, iteration = self.picardIterationSamplingWindow(head, features, n_slices)
+            avg_iteration += iteration
 
             # Step 3: Evaluation - Calculate minimun angle
             rt_idx = 0 # rt_idx is the index of rt, size [batch_size*n_slices, 3]
@@ -366,7 +367,7 @@ class Testbed():
                 # print(f"Minimum angle: {min_angle}, \npredict: \n{predict_r}, \nmin-corresponding answer: \n{rotations[min_rotations_idx]}")
                 # break
 
-            avg_iteration += iteration
+            
 
             # self.showImage(img)
 
@@ -505,7 +506,7 @@ class Testbed():
         fig, axs = init_fig()
 
         # set_start_method('spawn', force=True)  # Needed for multiprocessing
-        n_slices = 1000
+        n_slices = 3000
         frame_id = 0
 
         avg_loop_time = 0

@@ -129,8 +129,8 @@ class SymmetricSolidsDataset(Dataset):
                                             "rotation": rotation.tolist(), 
                                             "rotations_equivalent": rotations_equivalent.tolist()
                                             })
-                    # if idx == 1000:
-                    #     break
+                    if idx == 2000:
+                        break
 
     def saveData(self, split="train"):
         # Directory to save the dataset
@@ -196,8 +196,8 @@ class SymmetricSolidsDataset(Dataset):
                 print("Testing dataset saved successfully!")
 
     def __len__(self):
-        return len(self.metadata)
-        # return 1000
+        # return len(self.metadata)
+        return 2000
     
     def __getitem__(self, idx):
         """
