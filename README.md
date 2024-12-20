@@ -6,6 +6,5 @@
    ```
 
 ### Result Visualization
-
-https://github.com/user-attachments/assets/a4afc244-c484-41d5-9457-1ce283d7a44b
+![image](https://github.com/fionalin0221/liepose_pytorch/blob/chihying-dev/result.gif)
 
