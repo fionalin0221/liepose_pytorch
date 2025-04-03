@@ -95,7 +95,7 @@ def visualize_so3_probabilities(rotations,
     # so3 = SO3(tensor = torch.tensor(display_rotations))
     cmap = plt.cm.hsv
     colors = cmap(norm(z_angles))
-    scatterpoint_scaling = 1
+    scatterpoint_scaling = 10
     # euler_angles = so3.to_euler(order='ZYX')
     # print(euler_angles.shape)
     # eulers_queries = tfg.euler.from_rotation_matrix(display_rotations)

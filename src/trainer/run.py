@@ -47,8 +47,8 @@ def main():
     testbed = Testbed(config)
     # testbed.train()
     # testbed.test()
-    # testbed.visualize()
-    testbed.visualize_video()
+    testbed.visualize()
+    # testbed.visualize_video()
 
 
 if __name__ == "__main__":
