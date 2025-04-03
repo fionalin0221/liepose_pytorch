@@ -42,4 +42,4 @@ picard:
   epsilon: 0.085
   threshold: 1  # degree
   threshold_tau: 100
-  sliding_window: 10
+  sliding_window: 12

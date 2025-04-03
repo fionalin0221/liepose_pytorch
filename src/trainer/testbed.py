@@ -248,7 +248,7 @@ class Testbed():
                 # Calculate error for each timestep
                 batch_trace = torch.bmm(torch.linalg.inv(poses_new[1*size:(p)*size]), poses[(t+1)*size:(t+p)*size]).diagonal(dim1=-2, dim2=-1).sum(dim=-1)
                 error = torch.rad2deg(torch.acos(torch.clamp((batch_trace - 1) / 2, min=-1.0, max=1.0)))
-                threshold = coeff[t] * tau
+                # threshold = coeff[t] * tau
 
                 valid_indices = (error > threshold).nonzero(as_tuple=True)[0]
 
@@ -314,13 +314,20 @@ class Testbed():
 
             # Step 1: Backbone: get features of image via backbone network
             img = img.to(device)
+
+            start_backbone = time.time()
             features = backbone(img)
+            end_backbone = time.time()
+            print(f"Time backbone: {end_backbone - start_backbone:.6f} seconds")
 
             # Step 2: Denoised pose (sampling)
+            start_sampling = time.time()
             # poses = self.randomWalkSampling(head, features, n_slices)
             # poses = self.picardIterationSampling(head, features, n_slices)
             poses, iteration = self.picardIterationSamplingWindow(head, features, n_slices)
             avg_iteration += iteration
+            end_sampling = time.time()
+            print(f"Sampling Time: {end_sampling - start_sampling:.6f} seconds, ")
 
             # Step 3: Evaluation - Calculate minimun angle
             rt_idx = 0 # rt_idx is the index of rt, size [batch_size*n_slices, 3]
@@ -339,7 +346,7 @@ class Testbed():
 
                 for rot_idx, rotation in enumerate(rotations):
                     # Compute the relative rotation matrix & trace
-                    trace_R_rel = np.clip(np.trace(np.dot(predict_r.T, rotation)), -1, 3)
+                    trace_R_rel = np.clip(np.trace(np.dot(predict_r.T.detach().numpy(), rotation)), -1, 3)
 
                     # Compute the angular distance (in radians)
                     angle = np.degrees(np.arccos((trace_R_rel - 1) / 2))
@@ -388,19 +395,11 @@ class Testbed():
             print(f"{considered_shape[i]}: Total {shape_count[i]} samples, the average minimum angle is {average_minimum_angle_each_shape[i]}")
 
     def visualize(self):
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (1, 1, 1))
-        ])
+        transform = self.transform
 
-        batch_size = self.a.batch_size
+        batch_size = 1
         test_dataset = dataset.load_symmetric_solids_dataset(split='test', transform=transform)
         test_loader = dataset.getDataLoader(test_dataset, batch_size = batch_size, shuffle=True, num_workers=10)
-
-        cur_time = np.linspace(self.noise_schedule.timesteps, 0, self.a.steps, endpoint = False) -1
-        cur_time = cur_time.astype(np.int32).tolist()
-        prev_time = cur_time[1:] + [0]
-        time_seq = list(zip(cur_time, prev_time))
 
         # Check if CUDA is available and set the device
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -412,77 +411,35 @@ class Testbed():
         backbone, head = model.backbone, model.head
         backbone, head = backbone.to(device), head.to(device)
 
-        fig, axs = plt.subplots(1, 2, figsize=(12, 6), gridspec_kw={'width_ratios': [1, 2]})
+        # # figure initialization
+        fig, axs = init_fig()
 
-        # Remove axis ticks and labels
-        for spine in axs[1].spines.values():
-            spine.set_visible(False)
-        axs[1].set_xticks([])
-        axs[1].set_yticks([])
-        axs[1].set_xticklabels([])
-        axs[1].set_yticklabels([])
-        plt.show(block=False)
+        n_slices = 2000
 
         with torch.no_grad():
-            time_pose = []
-            n_slices = 500
-
             for batch_idx, (img, _, rotations_equivalent) in enumerate(test_loader):
-                batch = self.get_flat_batch_test(img, n_slices)
-                img = batch["img"].to(device)
-                rt = batch["rt"].to(device) #size(batch_size*n_slices, 3)
+                # Step 1: Pre-processing
+                img = img.to(device)
 
-                # get features of image via backbone network
+                # Step 2: Backbone: get features of image via backbone network
                 features = backbone(img)
 
-                # Denoised pose
-                for t, tp in time_seq:
-                    tt = torch.tensor(np.full([self.a.batch_size * n_slices, 1], t, dtype = np.int32)).to(device) 
-                    mu = head(features, rt, tt)
-                    rt = self.p_sample_apply(mu, rt, t) #size(batch_size*n_slices, 3)
-                    time_pose.append(rt[0])
-                    # print(f"Time step: {t}, Pose: {rt[0]}")
+                # Step 3: Denoised pose (sampling)
+                poses, _ = self.picardIterationSamplingWindow(head, features, n_slices)
 
-                # Iterate mini-batch
-                rt_idx = 0 # rt_idx is the index of rt, size [batch_size*n_slices, 3]
-                predict_r = lie_metrics.as_mat(rt).cpu().numpy()
-                for sample_idx in range(len(img)):
-                    # get ground-truth rotations of current sample
-                    rotations = rotations_equivalent[sample_idx].cpu().numpy()
+                img_frame = img[0].cpu()
+                img_np = img_frame.permute(1, 2, 0).numpy()
+                img_rgb = cv.cvtColor(img_np, cv.COLOR_BGR2RGB)
+                img_rgb += 0.5
+                show_frame(img_rgb, axs[0])
 
-                    # get predicted rotations of current sample
-                    predict_r_sample = np.array([predict_r[sample_idx + i * batch_size] for i in range(n_slices)])
-                    # Find the minimum angle from those equivalent answers
-                    print(f"Find the minimum angle of totally {len(rotations)} possible solutions.")
+                visualize_so3_probabilities(poses, fig=fig, ax=axs[1])
 
-                    # [-0.5, 0.5] -> [0, 1]
-                    img_rgb = img[sample_idx] + 0.5
+                fig.savefig(f"vis/test_data/frame{batch_idx}.png", bbox_inches='tight', pad_inches=0.1)
 
-                    # Convert image color, RGB->BGR
-                    img_bgr = cv.cvtColor(np.transpose(img_rgb.cpu().numpy(), (1, 2, 0)), cv.COLOR_RGB2BGR)
-
-                    # Show the imae on the left
-                    axs[0].imshow(img_bgr)
-                    axs[0].axis('off')
-                    axs[0].set_title("Image")
-                    
-                    fig, ax = visualize_so3_probabilities(predict_r_sample, fig=fig)
-                    axs[1].set_title("SO3 probability distribution")
-                    plt.draw()
-
-                    # Wait for user input
-                    user_input = input("Enter key: ").strip().lower()
-                    
-                    if user_input == 'q':
-                        print("Exiting...")
-                        return
-                    elif user_input == ' ':
-                        print("Next image...")
-                        axs[0].clear()
-                        axs[1].clear()
-
-                    # Update index of rt
-                    rt_idx += 1
+                # if cv.waitKey(30) & 0xFF == ord('q'):
+                #     print("Exiting...")
+                #     break
 
     def visualize_video(self):
         transform = self.transform
@@ -506,7 +463,7 @@ class Testbed():
         fig, axs = init_fig()
 
         # set_start_method('spawn', force=True)  # Needed for multiprocessing
-        n_slices = 3000
+        n_slices = 2000
         frame_id = 0
 
         avg_loop_time = 0
